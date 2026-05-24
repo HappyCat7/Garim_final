@@ -12,7 +12,7 @@ class PrivacyDetector {
       final line = lines[i];
       final rawText = line.text.trim();
 
-      if (rawText.isEmpty || line.boundingBox == null) continue;
+      if (rawText.isEmpty) continue;
       if (_isTitleOrSectionHeader(rawText)) continue;
       if (_isTableHeader(rawText)) continue;
 
@@ -201,7 +201,6 @@ class PrivacyDetector {
     for (final labelLine in lines) {
       final labelText = labelLine.text.trim();
       final labelRect = labelLine.boundingBox;
-      if (labelRect == null) continue;
 
       final compactLabel = labelText.replaceAll(' ', '');
 
@@ -215,7 +214,7 @@ class PrivacyDetector {
 
         final text = candidateLine.text.trim();
         final rect = candidateLine.boundingBox;
-        if (text.isEmpty || rect == null) continue;
+        if (text.isEmpty) continue;
 
         final compact = text.replaceAll(' ', '');
         final normalized = compact.replaceAll(',', '');
@@ -363,7 +362,6 @@ class PrivacyDetector {
   }) {
     final labelLine = lines[labelIndex];
     final labelRect = labelLine.boundingBox;
-    if (labelRect == null) return;
 
     TextLine? valueLine;
 
@@ -371,7 +369,6 @@ class PrivacyDetector {
       if (candidate == labelLine) continue;
 
       final rect = candidate.boundingBox;
-      if (rect == null) continue;
 
       final sameRow = (rect.center.dy - labelRect.center.dy).abs() < 18;
       final isRightSide = rect.left > labelRect.right + 40;
@@ -757,7 +754,7 @@ class PrivacyDetector {
     final lineText = line.text.trim();
     final lineRect = line.boundingBox;
 
-    if (lineRect == null || lineText.isEmpty) return Rect.zero;
+    if (lineText.isEmpty) return Rect.zero;
 
     final safeStart = start.clamp(0, lineText.length);
     final safeEnd = end.clamp(safeStart, lineText.length);
@@ -769,7 +766,7 @@ class PrivacyDetector {
       final elementText = element.text;
       final elementRect = element.boundingBox;
 
-      if (elementRect == null || elementText.isEmpty) continue;
+      if (elementText.isEmpty) continue;
 
       final elementStart = lineText.indexOf(elementText, searchStart);
       if (elementStart == -1) continue;

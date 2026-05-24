@@ -192,12 +192,20 @@ class _DetectionOverlayState extends State<DetectionOverlay> {
     if ((r - l).abs() < kMin) {
       final movesLeft = handle == _Handle.left ||
           handle == _Handle.topLeft || handle == _Handle.bottomLeft;
-      if (movesLeft) l = r - kMin; else r = l + kMin;
+      if (movesLeft) {
+        l = r - kMin;
+      } else {
+        r = l + kMin;
+      }
     }
     if ((b - t).abs() < kMin) {
       final movesTop = handle == _Handle.top ||
           handle == _Handle.topLeft || handle == _Handle.topRight;
-      if (movesTop) t = b - kMin; else b = t + kMin;
+      if (movesTop) {
+        t = b - kMin;
+      } else {
+        b = t + kMin;
+      }
     }
 
     // 반전 정규화

@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 
+// [Req 4] 8종 블러 효과
 enum BlurEffect {
-  gaussian,
-  mosaic,
-  blackBar,
-  frostedGlass,
+  gaussian,       // 가우시안 흐림
+  mosaic,         // 모자이크
+  blackBar,       // 검정 줄
+  frostedGlass,   // 반투명 유리
+  whiteBar,       // 흰색 줄
+  redBar,         // 빨간색 줄 (Redaction)
+  heavyPixelate,  // 아주 굵은 픽셀 모자이크
+  grayscaleBlur,  // 흑백 흐림
 }
 
 enum DetectionType {
@@ -39,25 +44,23 @@ class DetectionResult {
     polygon: polygon,
   );
 
-  String get typeLabel {
-    switch (type) {
-      case DetectionType.face:          return '얼굴';
-      case DetectionType.licensePlate:  return '번호판';
-      case DetectionType.document:      return privacyTexts.isNotEmpty ? 'OCR' : '문서';
-      case DetectionType.card:          return '카드';
-      case DetectionType.shippingLabel: return '운송장';
-      case DetectionType.manual:        return '수동';
-    }
-  }
+  String get typeLabel => switch (type) {
+    DetectionType.face          => '얼굴',
+    DetectionType.licensePlate  => '번호판',
+    DetectionType.document      => privacyTexts.isNotEmpty ? 'OCR' : '문서',
+    DetectionType.card          => '카드',
+    DetectionType.shippingLabel => '운송장',
+    DetectionType.manual        => '수동',
+  };
 
-  Color get typeColor {
-    switch (type) {
-      case DetectionType.face:          return const Color(0xFFFF6B6B);
-      case DetectionType.licensePlate:  return const Color(0xFF6C63FF);
-      case DetectionType.document:      return privacyTexts.isNotEmpty ? const Color(0xFFFF6B6B) : const Color(0xFF43E97B);
-      case DetectionType.card:          return Colors.orange;
-      case DetectionType.shippingLabel: return Colors.purple;
-      case DetectionType.manual:        return const Color(0xFF00BCD4);
-    }
-  }
+  Color get typeColor => switch (type) {
+    DetectionType.face          => const Color(0xFFFF6B6B),
+    DetectionType.licensePlate  => const Color(0xFF6C63FF),
+    DetectionType.document      => privacyTexts.isNotEmpty
+        ? const Color(0xFFFF6B6B)
+        : const Color(0xFF43E97B),
+    DetectionType.card          => Colors.orange,
+    DetectionType.shippingLabel => Colors.purple,
+    DetectionType.manual        => const Color(0xFF00BCD4),
+  };
 }

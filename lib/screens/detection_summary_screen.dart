@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import '../models/detection_result.dart';
-import '../models/manual_blur_box.dart';
 import '../services/face_detector_service.dart';
 import '../services/plate_detector_service.dart';
 import '../services/card_detector_service.dart';
@@ -107,8 +106,12 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
       );
 
       final allDetections = [...faceResults, ...plateResults];
-      for (int i = 0; i < allDetections.length; i++) _detectionEnabled[i] = true;
-      for (int i = 0; i < ocrResults.length; i++) _ocrEnabled[i] = true;
+      for (int i = 0; i < allDetections.length; i++) {
+        _detectionEnabled[i] = true;
+      }
+      for (int i = 0; i < ocrResults.length; i++) {
+        _ocrEnabled[i] = true;
+      }
 
       setState(() {
         _detections    = allDetections;

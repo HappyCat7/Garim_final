@@ -1,8 +1,6 @@
 import 'dart:io';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 import '../models/detection_result.dart';
 import 'ocr_service.dart';
@@ -36,7 +34,6 @@ class PrivacyDetectorService {
 
       final filteredLines = lines.where((line) {
         final box = line.boundingBox;
-        if (box == null) return false;
         return region.overlaps(box);
       }).toList();
 
