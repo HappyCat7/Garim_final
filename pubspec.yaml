@@ -1,0 +1,56 @@
+name: garim
+description: "가림 - AI 개인정보 자동 탐지 & 블러처리"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 이미지 선택
+  image_picker: ^1.0.8
+
+  # TFLite 추론 (번호판, 문서 탐지)
+  tflite_flutter: ^0.12.1
+
+  # 얼굴 탐지 (ML Kit)
+  google_mlkit_face_detection: ^0.13.2
+
+  # OCR (개인정보 탐지)
+  google_mlkit_text_recognition: ^0.15.1
+
+  # 이미지 처리 & 블러
+  image: ^4.2.0
+
+  # 갤러리 저장
+  gal: ^1.1.0
+
+  # 공유
+  share_plus: ^10.0.0
+
+  # 임시 파일
+  path_provider: ^2.1.5
+
+  # 권한
+  permission_handler: ^11.3.1
+
+  cupertino_icons: ^1.0.8
+
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/yolo_plate.tflite
+    - assets/models/yolo_document.tflite
+    #- assets/models/yolo_card.tflite
+    - assets/sticker.png
