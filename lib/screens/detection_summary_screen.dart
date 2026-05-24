@@ -51,7 +51,10 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
 
   // ── InteractiveViewer ────────────────────────────────────────────────
   final _transformationController = TransformationController();
-  bool _isZoomed = false;
+
+  // ── 탭 vs 드래그 구분 ────────────────────────────────────────────────
+  Offset? _panStartPosition;
+  static const double _kTapSlop = 10.0; // 이 픽셀 이내면 탭으로 간주
 
   // ── 개별 ON/OFF ──────────────────────────────────────────────────────
   final Map<int, bool> _detectionEnabled = {};
@@ -65,10 +68,6 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
   void initState() {
     super.initState();
     _transformationController.addListener(() {
-      final scale  = _transformationController.value.getMaxScaleOnAxis();
-      final zoomed = scale > 1.01;
-      if (zoomed != _isZoomed) setState(() => _isZoomed = zoomed);
-      // 스케일 변경 시 라벨 크기 업데이트를 위해 rebuild
       setState(() {});
     });
     _analyze();
@@ -100,7 +99,12 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
       final plateResults = await _plateService.detect(widget.imageFile);
 
       setState(() => _statusMessage = 'OCR 개인정보를 분석하고 있어요...');
-      final ocrResults = await _privacyService.detectWholeImage(widget.imageFile);
+      final ocrResults = await _privacyService.detectFromRegion(
+        widget.imageFile,
+        Rect.fromLTWH(0, 0, _imageSize.width, _imageSize.height),
+        _imageSize.width,
+        _imageSize.height,
+      );
 
       final allDetections = [...faceResults, ...plateResults];
       for (int i = 0; i < allDetections.length; i++) _detectionEnabled[i] = true;
@@ -168,24 +172,36 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
     }
   }
 
-  // ── 이미지 박스 탭 → 개별 토글 ───────────────────────────────────
-  void _onImageTapped(Offset tapPos, Size displaySize) {
-    if (_isZoomed) return;
+  // ── 탭 처리: 드래그 거리 짧으면 탭으로 간주 ──────────────────────────
+  void _onPanStart(DragStartDetails d) {
+    _panStartPosition = d.localPosition;
+  }
 
+  void _onPanEnd(DragEndDetails d, Size displaySize) {
+    if (_panStartPosition == null) return;
+    // 손가락을 뗀 위치를 알 수 없으므로 panStart 기준으로만 처리
+    // → onTapUp으로 대체 처리 (아래 _onTapUp 사용)
+    _panStartPosition = null;
+  }
+
+  void _onTapUp(TapUpDetails d, Size displaySize) {
+    // InteractiveViewer 변환 역행렬로 실제 이미지 좌표 계산
     final matrix   = _transformationController.value;
     final inverted = Matrix4.inverted(matrix);
-    final local    = MatrixUtils.transformPoint(inverted, tapPos);
+    final local    = MatrixUtils.transformPoint(inverted, d.localPosition);
 
-    final sx = _imageSize.width  / displaySize.width;
-    final sy = _imageSize.height / displaySize.height;
+    final sx    = _imageSize.width  / displaySize.width;
+    final sy    = _imageSize.height / displaySize.height;
     final imgPt = Offset(local.dx * sx, local.dy * sy);
 
+    // 자동 탐지 박스 탭 확인
     for (int i = 0; i < _detections.length; i++) {
       if (_detections[i].boundingBox.contains(imgPt)) {
         setState(() => _detectionEnabled[i] = !(_detectionEnabled[i] ?? true));
         return;
       }
     }
+    // OCR 박스 탭 확인
     for (int i = 0; i < _ocrDetections.length; i++) {
       if (_ocrDetections[i].boundingBox.contains(imgPt)) {
         setState(() => _ocrEnabled[i] = !(_ocrEnabled[i] ?? true));
@@ -267,9 +283,8 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
       children: [
         Expanded(
           child: SingleChildScrollView(
-            physics: _isZoomed
-                ? const NeverScrollableScrollPhysics()
-                : const ClampingScrollPhysics(),
+            // 확대 중에도 스크롤 허용 (이미지 내부는 InteractiveViewer가 처리)
+            physics: const ClampingScrollPhysics(),
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -285,127 +300,133 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
                           _imageSize.height * displayWidth / _imageSize.width;
                       final displaySize = Size(displayWidth, displayHeight);
 
-                      return GestureDetector(
-                        onTapUp: (d) =>
-                            _onImageTapped(d.localPosition, displaySize),
-                        child: InteractiveViewer(
-                          transformationController: _transformationController,
-                          minScale:     1.0,
-                          maxScale:     5.0,
-                          clipBehavior: Clip.hardEdge,
-                          child: SizedBox(
-                            width:  displayWidth,
-                            height: displayHeight,
-                            child: Stack(
-                              children: [
-                                Positioned.fill(
-                                  child: Image.memory(
-                                      _originalBytes!, fit: BoxFit.fill),
-                                ),
+                      return SizedBox(
+                        width:  displayWidth,
+                        height: displayHeight,
+                        child: GestureDetector(
+                          // 탭은 onTapUp으로만 처리 → 드래그와 명확히 분리
+                          onTapUp: (d) => _onTapUp(d, displaySize),
+                          child: InteractiveViewer(
+                            transformationController: _transformationController,
+                            minScale:     1.0,
+                            maxScale:     5.0,
+                            clipBehavior: Clip.hardEdge,
+                            // InteractiveViewer가 pan/scale 제스처 담당
+                            // GestureDetector의 onTapUp은 짧은 탭만 받음
+                            child: SizedBox(
+                              width:  displayWidth,
+                              height: displayHeight,
+                              child: Stack(
+                                children: [
+                                  Positioned.fill(
+                                    child: Image.memory(
+                                        _originalBytes!, fit: BoxFit.fill),
+                                  ),
 
-                                // 자동 탐지 박스
-                                ..._detections.asMap().entries.map((e) {
-                                  final i       = e.key;
-                                  final d       = e.value;
-                                  final enabled = _detectionEnabled[i] ?? true;
-                                  final sx = displayWidth  / _imageSize.width;
-                                  final sy = displayHeight / _imageSize.height;
-                                  final dr = Rect.fromLTWH(
-                                    d.boundingBox.left   * sx,
-                                    d.boundingBox.top    * sy,
-                                    d.boundingBox.width  * sx,
-                                    d.boundingBox.height * sy,
-                                  );
+                                  // 자동 탐지 박스
+                                  ..._detections.asMap().entries.map((e) {
+                                    final i       = e.key;
+                                    final d       = e.value;
+                                    final enabled = _detectionEnabled[i] ?? true;
+                                    final sx = displayWidth  / _imageSize.width;
+                                    final sy = displayHeight / _imageSize.height;
+                                    final dr = Rect.fromLTWH(
+                                      d.boundingBox.left   * sx,
+                                      d.boundingBox.top    * sy,
+                                      d.boundingBox.width  * sx,
+                                      d.boundingBox.height * sy,
+                                    );
 
-                                  // 스케일에 반비례해서 라벨 크기 축소
-                                  final scale      = _currentScale;
-                                  final labelSize  = (10.0 / scale).clamp(5.0, 10.0);
-                                  final padH       = (5.0  / scale).clamp(2.0, 5.0);
-                                  final padV       = (2.0  / scale).clamp(1.0, 2.0);
-                                  final topOffset  = -(20.0 / scale).clamp(10.0, 20.0);
+                                    final scale     = _currentScale;
+                                    final labelSize = (10.0 / scale).clamp(5.0, 10.0);
+                                    final padH      = (5.0  / scale).clamp(2.0, 5.0);
+                                    final padV      = (2.0  / scale).clamp(1.0, 2.0);
+                                    final topOffset = -(20.0 / scale).clamp(10.0, 20.0);
 
-                                  return Positioned(
-                                    left: dr.left, top: dr.top,
-                                    width: dr.width, height: dr.height,
-                                    child: Stack(
-                                      clipBehavior: Clip.none,
-                                      children: [
-                                        Container(
-                                          decoration: BoxDecoration(
-                                            border: Border.all(
-                                              color: enabled
-                                                  ? d.typeColor
-                                                  : d.typeColor.withValues(alpha: 0.25),
-                                              width: 2,
-                                            ),
-                                            color: enabled
-                                                ? d.typeColor.withValues(alpha: 0.15)
-                                                : Colors.transparent,
-                                            borderRadius: BorderRadius.circular(4),
-                                          ),
-                                        ),
-                                        Positioned(
-                                          top: topOffset,
-                                          left: 0,
-                                          child: Container(
-                                            padding: EdgeInsets.symmetric(
-                                                horizontal: padH,
-                                                vertical: padV),
+                                    return Positioned(
+                                      left: dr.left, top: dr.top,
+                                      width: dr.width, height: dr.height,
+                                      child: Stack(
+                                        clipBehavior: Clip.none,
+                                        children: [
+                                          Container(
                                             decoration: BoxDecoration(
+                                              border: Border.all(
+                                                color: enabled
+                                                    ? d.typeColor
+                                                    : d.typeColor.withValues(alpha: 0.25),
+                                                width: 2,
+                                              ),
                                               color: enabled
-                                                  ? d.typeColor
-                                                  : d.typeColor.withValues(alpha: 0.25),
+                                                  ? d.typeColor.withValues(alpha: 0.15)
+                                                  : Colors.transparent,
                                               borderRadius: BorderRadius.circular(4),
                                             ),
-                                            child: Text(
-                                              enabled ? d.typeLabel : '${d.typeLabel} OFF',
-                                              style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: labelSize,
-                                                  fontWeight: FontWeight.bold),
+                                          ),
+                                          Positioned(
+                                            top: topOffset, left: 0,
+                                            child: Container(
+                                              padding: EdgeInsets.symmetric(
+                                                  horizontal: padH,
+                                                  vertical: padV),
+                                              decoration: BoxDecoration(
+                                                color: enabled
+                                                    ? d.typeColor
+                                                    : d.typeColor.withValues(alpha: 0.25),
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                enabled
+                                                    ? d.typeLabel
+                                                    : '${d.typeLabel} OFF',
+                                                style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: labelSize,
+                                                    fontWeight: FontWeight.bold),
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
+                                        ],
+                                      ),
+                                    );
+                                  }),
 
-                                // OCR 박스
-                                ..._ocrDetections.asMap().entries.map((e) {
-                                  final i       = e.key;
-                                  final d       = e.value;
-                                  final enabled = _ocrEnabled[i] ?? true;
-                                  final sx = displayWidth  / _imageSize.width;
-                                  final sy = displayHeight / _imageSize.height;
-                                  final dr = Rect.fromLTWH(
-                                    d.boundingBox.left   * sx,
-                                    d.boundingBox.top    * sy,
-                                    d.boundingBox.width  * sx,
-                                    d.boundingBox.height * sy,
-                                  );
-                                  return Positioned(
-                                    left: dr.left, top: dr.top,
-                                    width: dr.width, height: dr.height,
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        border: Border.all(
+                                  // OCR 박스
+                                  ..._ocrDetections.asMap().entries.map((e) {
+                                    final i       = e.key;
+                                    final d       = e.value;
+                                    final enabled = _ocrEnabled[i] ?? true;
+                                    final sx = displayWidth  / _imageSize.width;
+                                    final sy = displayHeight / _imageSize.height;
+                                    final dr = Rect.fromLTWH(
+                                      d.boundingBox.left   * sx,
+                                      d.boundingBox.top    * sy,
+                                      d.boundingBox.width  * sx,
+                                      d.boundingBox.height * sy,
+                                    );
+                                    return Positioned(
+                                      left: dr.left, top: dr.top,
+                                      width: dr.width, height: dr.height,
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          border: Border.all(
+                                            color: enabled
+                                                ? const Color(0xFFFF6B6B)
+                                                : const Color(0xFFFF6B6B)
+                                                .withValues(alpha: 0.25),
+                                            width: 1.5,
+                                          ),
                                           color: enabled
                                               ? const Color(0xFFFF6B6B)
-                                              : const Color(0xFFFF6B6B)
-                                              .withValues(alpha: 0.25),
-                                          width: 1.5,
+                                              .withValues(alpha: 0.15)
+                                              : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(3),
                                         ),
-                                        color: enabled
-                                            ? const Color(0xFFFF6B6B)
-                                            .withValues(alpha: 0.15)
-                                            : Colors.transparent,
-                                        borderRadius: BorderRadius.circular(3),
                                       ),
-                                    ),
-                                  );
-                                }),
-                              ],
+                                    );
+                                  }),
+                                ],
+                              ),
                             ),
                           ),
                         ),
