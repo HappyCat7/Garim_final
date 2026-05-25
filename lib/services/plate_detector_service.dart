@@ -7,7 +7,7 @@ import '../models/detection_result.dart';
 class PlateDetectorService {
   Interpreter? _interpreter;
   static const int inputSize = 640;
-  static const double confidenceThreshold = 0.5;
+  static const double confidenceThreshold = 0.7;
   static const double iouThreshold = 0.45;
 
   Future<void> loadModel() async {

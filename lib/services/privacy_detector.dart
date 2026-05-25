@@ -8,6 +8,16 @@ class PrivacyDetector {
   static List<PrivacyItem> detect(List<TextLine> lines) {
     final List<_DetectedSpan> spans = [];
 
+    // 문서 전체가 운송장/택배 양식이면, 이름/등기번호/주문번호 등
+    // 일부 항목이 개별 줄에서 문맥 키워드 없이 떨어져 OCR 되어도 탐지할 수 있게 한다.
+    final bool globalWaybillContext = lines.any(
+          (line) => _isWaybillContext(line.text.trim()),
+    );
+
+    // 여권은 일부가 잘려 있거나 확대된 이미지에서도 Passport No, KOR, MRZ 등
+    // 고정 키워드/형태가 남아있는 경우가 많으므로 전체 OCR 기준 문맥을 먼저 판단한다.
+    final bool globalPassportContext = _isPassportContext(lines);
+
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
       final rawText = line.text.trim();
@@ -17,7 +27,8 @@ class PrivacyDetector {
       if (_isTableHeader(rawText)) continue;
 
       final labelType = _labelType(rawText);
-      final bool currentLineWaybillContext = _isWaybillContext(rawText);
+      final bool currentLineWaybillContext =
+          _isWaybillContext(rawText) || globalWaybillContext;
 
       _addRegexMatches(
         spans: spans,
@@ -53,6 +64,10 @@ class PrivacyDetector {
         regex: _driverLicenseRegex,
         type: 'DRIVER_LICENSE',
         confidence: 'MEDIUM',
+        avoidOverlapTypes: {
+          'RRN',
+          'PARTIAL_RRN',
+        },
       );
 
       _addRegexMatches(
@@ -60,8 +75,20 @@ class PrivacyDetector {
         line: line,
         regex: _passportRegex,
         type: 'PASSPORT_NUMBER',
-        confidence: 'MEDIUM',
+        confidence: globalPassportContext ? 'HIGH' : 'MEDIUM',
+        avoidOverlapTypes: {
+          'RRN',
+          'DRIVER_LICENSE',
+        },
       );
+
+      if (globalPassportContext || _looksLikePassportLine(rawText)) {
+        _addPassportSpecificSpans(
+          spans: spans,
+          line: line,
+          isGlobalPassportContext: globalPassportContext,
+        );
+      }
 
       if (currentLineWaybillContext) {
         _addRegexMatches(
@@ -78,8 +105,40 @@ class PrivacyDetector {
         );
       }
 
-      if ((_hasAccountContext(rawText) || _looksLikeAccountOnly(rawText)) &&
-          !currentLineWaybillContext) {
+      // 등기번호는 계좌번호와 형태가 비슷하므로 계좌번호보다 먼저 분리한다.
+      if (_hasRegisterNumberContext(rawText)) {
+        _addRegexMatches(
+          spans: spans,
+          line: line,
+          regex: _registerNumberRegex,
+          type: 'REGISTER_NUMBER',
+          confidence: 'MEDIUM',
+          avoidOverlapTypes: {
+            'PHONE',
+            'CARD_NUMBER',
+            'ACCOUNT_NUMBER',
+            'WAYBILL_CODE',
+          },
+        );
+      }
+
+      // 주문번호는 같은 줄에 "주문번호 : 3907981 099519925" 형태로 붙어 나오는 경우가 많다.
+      // 일반 숫자/계좌번호 패턴과 섞이지 않도록 주문번호 라벨 뒤 값만 별도 탐지한다.
+      final inlineOrderNumber = _extractInlineOrderNumberSpan(rawText);
+      if (inlineOrderNumber != null) {
+        _addManualSpan(
+          spans: spans,
+          line: line,
+          span: inlineOrderNumber,
+          type: 'WAYBILL_ORDER_NUMBER',
+          confidence: 'MEDIUM',
+        );
+      }
+
+      // 운송장 문서에서는 바코드/등기번호/운송장번호가 계좌번호 형태로 오탐될 수 있어
+      // 계좌번호 키워드가 있을 때만 계좌번호로 인정한다.
+      if (_hasAccountContext(rawText) ||
+          (!currentLineWaybillContext && _looksLikeAccountOnly(rawText))) {
         _addRegexMatches(
           spans: spans,
           line: line,
@@ -93,6 +152,7 @@ class PrivacyDetector {
             'RRN',
             'PARTIAL_RRN',
             'WAYBILL_CODE',
+            'REGISTER_NUMBER',
           },
         );
       }
@@ -161,7 +221,7 @@ class PrivacyDetector {
           spans: spans,
           line: line,
           span: waybillName,
-          type: 'WAYBILL_NAME',
+          type: 'NAME',
           confidence: 'MEDIUM',
         );
       } else {
@@ -189,8 +249,48 @@ class PrivacyDetector {
 
     _addWaybillOrderNumberFragments(spans: spans, lines: lines);
 
+    if (globalPassportContext) {
+      _addPassportContextualFields(spans: spans, lines: lines);
+    }
+
     return _removeDuplicates(
-      spans.map((e) => e.toPrivacyItem()).toList(),
+      _applyPriorityRules(
+        spans.map((e) => e.toPrivacyItem()).toList(),
+      ),
+    );
+  }
+
+  static _TextSpanResult? _extractInlineOrderNumberSpan(String text) {
+    final compact = text.trim();
+
+    if (!compact.replaceAll(' ', '').contains('주문번호') &&
+        !compact.replaceAll(' ', '').contains('주문번')) {
+      return null;
+    }
+
+    final match = RegExp(
+      r'(주문번호|주문번)\s*[:：]?\s*([0-9][0-9\s,\-]{5,30}[0-9])',
+    ).firstMatch(compact);
+
+    if (match == null) return null;
+
+    final value = match.group(2);
+    if (value == null) return null;
+
+    final normalized = value.replaceAll(RegExp(r'[^0-9]'), '');
+
+    // 주문번호는 서비스마다 길이가 다르므로 너무 짧은 숫자만 제외한다.
+    if (normalized.length < 8 || normalized.length > 24) {
+      return null;
+    }
+
+    final start = match.start + match.group(0)!.indexOf(value);
+    final end = start + value.length;
+
+    return _TextSpanResult(
+      value: value.trim(),
+      start: start,
+      end: end,
     );
   }
 
@@ -257,11 +357,437 @@ class PrivacyDetector {
     }
   }
 
+
+  static bool _isPassportContext(List<TextLine> lines) {
+    int score = 0;
+
+    for (final line in lines) {
+      final compact = _normalizePassportText(line.text);
+      final mrzCompact = _normalizeMrzText(line.text);
+
+      if (compact.contains('PASSPORT')) score += 3;
+      if (compact.contains('여권')) score += 3;
+      if (compact.contains('PASSPORTNO')) score += 3;
+      if (compact.contains('PERSONALNO')) score += 2;
+      if (compact.contains('주민등록번호')) score += 2;
+      if (compact.contains('NATIONALITY')) score += 2;
+      if (compact.contains('DATEOFBIRTH')) score += 2;
+      if (compact.contains('DATEOFISSUE')) score += 1;
+      if (compact.contains('DATEOFEXPIRY')) score += 1;
+      if (compact.contains('KOR')) score += 1;
+      if (compact.contains('REPUBLICOFKOREA')) score += 3;
+      if (_isPassportMrzLine(mrzCompact)) score += 4;
+      if (_passportRegex.hasMatch(compact)) score += 2;
+    }
+
+    return score >= 5;
+  }
+
+  static bool _looksLikePassportLine(String text) {
+    final compact = _normalizePassportText(text);
+    final mrzCompact = _normalizeMrzText(text);
+
+    return compact.contains('PASSPORT') ||
+        compact.contains('여권') ||
+        compact.contains('PERSONALNO') ||
+        compact.contains('NATIONALITY') ||
+        compact.contains('NTIONALITY') ||
+        compact.contains('DATEOFBIRTH') ||
+        compact.contains('OFBIRTH') ||
+        compact.contains('DATEOFISSUE') ||
+        compact.contains('ISSUE') ||
+        compact.contains('LSSUE') ||
+        compact.contains('DATEOFEXPIRY') ||
+        compact.contains('EXPIRY') ||
+        compact.contains('PIY') ||
+        compact.contains('REPUBLICOFKOREA') ||
+        compact.contains('ASSORTNO') ||
+        compact.contains('PASSPORTNO') ||
+        _isPassportMrzLine(mrzCompact) ||
+        _passportRegex.hasMatch(compact);
+  }
+
+  static void _addPassportSpecificSpans({
+    required List<_DetectedSpan> spans,
+    required TextLine line,
+    required bool isGlobalPassportContext,
+  }) {
+    final text = line.text.trim();
+    if (text.isEmpty) return;
+
+    final compact = _normalizePassportText(text);
+    final mrzCompact = _normalizeMrzText(text);
+
+    // MRZ는 이름, 여권번호, 국적, 생년월일, 성별, 개인번호 등이 압축된 영역이므로
+    // 한 줄 전체를 민감한 여권 개인정보 영역으로 잡는다.
+    if (_isPassportMrzLine(mrzCompact)) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: _TextSpanResult(
+          value: text,
+          start: 0,
+          end: text.length,
+        ),
+        type: 'PASSPORT_MRZ',
+        confidence: 'HIGH',
+      );
+      return;
+    }
+
+    if (!isGlobalPassportContext) return;
+
+    final personalNo = _extractPassportPersonalNumberSpan(text);
+    if (personalNo != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: personalNo,
+        type: 'PASSPORT_PERSONAL_NUMBER',
+        confidence: 'HIGH',
+      );
+    }
+
+    final passportDate = _extractPassportDateSpan(text);
+    if (passportDate != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: passportDate,
+        type: 'PASSPORT_DATE',
+        confidence: 'MEDIUM',
+      );
+    }
+
+    final englishName = _extractPassportEnglishNameSpan(text);
+    if (englishName != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: englishName,
+        type: 'PASSPORT_NAME',
+        confidence: 'MEDIUM',
+      );
+    }
+
+    final koreanName = _extractPassportKoreanNameSpan(text);
+    if (koreanName != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: koreanName,
+        type: 'NAME',
+        confidence: 'MEDIUM',
+      );
+    }
+  }
+
+
+  static bool _isPassportMrzLine(String normalizedText) {
+    if (!_mrzRegex.hasMatch(normalizedText)) return false;
+
+    // MRZ는 반드시 '<'가 많이 포함되거나, 여권번호+국가코드+생년월일+성별+만료일이
+    // 압축된 두 번째 줄 구조를 가져야 한다.
+    // MINISTRY OF FOREIGN AFFAIRS 같은 긴 영문 기관명이 MRZ로 오탐되는 것을 방지한다.
+    final hasMrzSeparator = normalizedText.contains('<');
+    final looksFirstLine = normalizedText.startsWith('P') &&
+        normalizedText.contains('KOR') &&
+        hasMrzSeparator;
+
+    final looksSecondLine = RegExp(
+      r'^[A-Z0-9]{8,9}[0-9][A-Z]{3}[0-9]{6}[0-9]?[MF<]',
+    ).hasMatch(normalizedText);
+
+    return looksFirstLine || looksSecondLine;
+  }
+
+  static String _normalizePassportText(String text) {
+    return text
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceAll('〈', '<')
+        .replaceAll('《', '<')
+        .replaceAll('«', '<')
+        .replaceAll('‹', '<')
+        .toUpperCase();
+  }
+
+  static String _normalizeMrzText(String text) {
+    return text
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceAll('〈', '<')
+        .replaceAll('《', '<')
+        .replaceAll('«', '<')
+        .replaceAll('‹', '<')
+        .replaceAll(' ', '')
+        .toUpperCase();
+  }
+
+  static String _normalizePassportTextForDate(String text) {
+    return text
+        .toUpperCase()
+        .replaceAll('I', '1')
+        .replaceAll('L', '1')
+        .replaceAll('O', '0');
+  }
+
+  static void _addPassportContextualFields({
+    required List<_DetectedSpan> spans,
+    required List<TextLine> lines,
+  }) {
+    for (int i = 0; i < lines.length; i++) {
+      final labelLine = lines[i];
+      final labelText = labelLine.text.trim();
+      final labelKey = _normalizePassportText(labelText);
+
+      final String? type = _passportLabelType(labelKey);
+      if (type == null) continue;
+
+      final valueLine = _findPassportValueLine(
+        lines: lines,
+        labelLine: labelLine,
+        labelType: type,
+      );
+
+      if (valueLine == null) continue;
+
+      final valueText = valueLine.text.trim();
+      final span = _passportValueSpanForType(type, valueText);
+      if (span == null) continue;
+
+      _addManualSpan(
+        spans: spans,
+        line: valueLine,
+        span: span,
+        type: type,
+        confidence: type == 'PASSPORT_NUMBER' || type == 'PASSPORT_PERSONAL_NUMBER'
+            ? 'HIGH'
+            : 'MEDIUM',
+      );
+    }
+  }
+
+  static String? _passportLabelType(String key) {
+    if (key.contains('PASSPORTNO') || key.contains('ASSPORTNO') || key.contains('여권번호') || key.contains('여번')) {
+      return 'PASSPORT_NUMBER';
+    }
+    if (key.contains('SURNAME')) return 'PASSPORT_NAME';
+    if (key.contains('GIVEN') || key.contains('GIHN') || key.contains('G1HN') || key.contains('이름')) {
+      return 'PASSPORT_NAME';
+    }
+    if (key.contains('BIRTH') || key.contains('0FBIRTH') || key.contains('OFBIRTH') || key.contains('생년월일')) {
+      return 'BIRTH_DATE';
+    }
+    if (key.contains('NATIONALITY') || key.contains('NTIONALITY') || key.contains('국적')) {
+      return 'PASSPORT_NATIONALITY';
+    }
+    if (key.contains('ISSUE') || key.contains('LSSUE') || key.contains('발급일')) {
+      return 'PASSPORT_ISSUE_DATE';
+    }
+    if (key.contains('EXPIRY') || key.contains('PIRY') || key.contains('기간만') || key.contains('만료일')) {
+      return 'PASSPORT_EXPIRY_DATE';
+    }
+    if (key.contains('PERSONALNO') || key.contains('주민등록번호') || key.contains('주민번호')) {
+      return 'PASSPORT_PERSONAL_NUMBER';
+    }
+    return null;
+  }
+
+  static TextLine? _findPassportValueLine({
+    required List<TextLine> lines,
+    required TextLine labelLine,
+    required String labelType,
+  }) {
+    final labelRect = labelLine.boundingBox;
+    final candidates = <_TableValueCandidate>[];
+
+    for (final candidate in lines) {
+      if (candidate == labelLine) continue;
+
+      final text = candidate.text.trim();
+      if (text.isEmpty) continue;
+
+      final rect = candidate.boundingBox;
+      if (rect.top < labelRect.top - 2) continue;
+      if (rect.top - labelRect.bottom > 32) continue;
+
+      final horizontalOverlap = rect.right >= labelRect.left - 12 && rect.left <= labelRect.right + 90;
+      final startsNearLabel = (rect.left - labelRect.left).abs() < 80;
+      final isBelow = rect.center.dy > labelRect.center.dy;
+
+      if (!isBelow || (!horizontalOverlap && !startsNearLabel)) continue;
+      if (!_looksValidPassportValue(labelType, text)) continue;
+
+      final dx = (rect.left - labelRect.left).abs();
+      final dy = (rect.top - labelRect.bottom).abs();
+      candidates.add(_TableValueCandidate(line: candidate, score: dy + dx * 0.03));
+    }
+
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) => a.score.compareTo(b.score));
+    return candidates.first.line;
+  }
+
+  static bool _looksValidPassportValue(String type, String text) {
+    final trimmed = text.trim();
+    final key = _normalizePassportText(trimmed);
+    final mrz = _normalizeMrzText(trimmed);
+
+    if (_passportLabelType(key) != null) return false;
+    if (_isPassportMrzLine(mrz)) return false;
+
+    switch (type) {
+      case 'PASSPORT_NUMBER':
+        return _passportRegex.hasMatch(key);
+      case 'PASSPORT_NAME':
+        return RegExp(r'^[A-Z][A-Z\s\-]{1,24}$').hasMatch(trimmed.toUpperCase()) ||
+            _isLikelyKoreanName(trimmed.replaceAll(RegExp(r'\s+'), ''));
+      case 'BIRTH_DATE':
+      case 'PASSPORT_ISSUE_DATE':
+      case 'PASSPORT_EXPIRY_DATE':
+        return _extractPassportDateSpan(trimmed) != null;
+      case 'PASSPORT_NATIONALITY':
+        return key.contains('KOR') || key.contains('REPUBLICOFKOREA') || key.length >= 3;
+      case 'PASSPORT_PERSONAL_NUMBER':
+        return RegExp(r'^[0-9]{7}$').hasMatch(key);
+      default:
+        return false;
+    }
+  }
+
+  static _TextSpanResult? _passportValueSpanForType(String type, String text) {
+    final original = text.trim();
+    if (original.isEmpty) return null;
+
+    if (type == 'PASSPORT_NUMBER') {
+      final match = _passportRegex.firstMatch(_normalizePassportText(original));
+      if (match == null) return null;
+      return _TextSpanResult(value: original, start: 0, end: original.length);
+    }
+
+    if (type == 'PASSPORT_NAME') {
+      final english = _extractPassportEnglishNameSpan(original);
+      if (english != null) return english;
+      final korean = _extractPassportKoreanNameSpan(original);
+      if (korean != null) return korean;
+      return null;
+    }
+
+    if (type == 'BIRTH_DATE' || type == 'PASSPORT_ISSUE_DATE' || type == 'PASSPORT_EXPIRY_DATE') {
+      return _extractPassportDateSpan(original);
+    }
+
+    if (type == 'PASSPORT_NATIONALITY') {
+      return _TextSpanResult(value: original, start: 0, end: original.length);
+    }
+
+    if (type == 'PASSPORT_PERSONAL_NUMBER') {
+      return _extractPassportPersonalNumberSpan(original);
+    }
+
+    return null;
+  }
+
+  static _TextSpanResult? _extractPassportPersonalNumberSpan(String text) {
+    final compact = text.trim();
+
+    // 한국 여권의 Personal No 영역은 예시처럼 7자리 숫자로 OCR 되는 경우가 많다.
+    // 일반 문서에서는 위험하지만, 여권 문맥 안에서는 주민번호 뒷자리/개인번호로 처리한다.
+    final match = RegExp(r'^[0-9]{7}$').firstMatch(compact);
+    if (match == null) return null;
+
+    return _TextSpanResult(
+      value: compact,
+      start: 0,
+      end: compact.length,
+    );
+  }
+
+  static _TextSpanResult? _extractPassportDateSpan(String text) {
+    final original = text.trim();
+    final normalized = _normalizePassportTextForDate(original);
+
+    final looksLikePassportDate = RegExp(
+      r'^[0-9]{1,2}.*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|월).*[0-9IOOL]{4}$',
+    ).hasMatch(normalized);
+
+    if (!looksLikePassportDate) return null;
+
+    return _TextSpanResult(
+      value: original,
+      start: 0,
+      end: original.length,
+    );
+  }
+
+  static _TextSpanResult? _extractPassportEnglishNameSpan(String text) {
+    final original = text.trim();
+    final upper = original.toUpperCase();
+    final compact = upper.replaceAll(RegExp(r'\s+'), '');
+
+    if (!RegExp(r'^[A-Z][A-Z\s\-]{1,24}$').hasMatch(upper)) return null;
+
+    final blacklist = {
+      'PM',
+      'M',
+      'F',
+      'KOR',
+      'PMKOR',
+      'PASSPORT',
+      'REPUBLIC',
+      'REPUBLICOFKOREA',
+      'MINISTRY',
+      'MINISSOF',
+      'MINISTRYOFFOREIGNAFFAIRSANDTRADE',
+      'MINISTRYOFFOREIGNAFFAIRS',
+      'FOREIGNAFFAIRS',
+      'AUTHORITY',
+      'THORITY',
+      'NATIONALITY',
+      'NTIONALITY',
+      'SURNAME',
+      'GIVENNAMES',
+      'GIHNAMES',
+      'DATEOFBIRTH',
+      'OFBIRTH',
+      'DATEOFISSUE',
+      'WDATEOFISSUE',
+      'DATEOFEXPIRY',
+    };
+
+    if (blacklist.contains(compact)) return null;
+    if (compact.length < 2 || compact.length > 24) return null;
+    if (compact.contains('DATE') || compact.contains('ISSUE')) return null;
+    if (compact.contains('BIRTH') || compact.contains('NATIONAL')) return null;
+    if (compact.contains('FOREIGN') || compact.contains('AFFAIRS')) return null;
+
+    return _TextSpanResult(
+      value: original,
+      start: 0,
+      end: original.length,
+    );
+  }
+
+  static _TextSpanResult? _extractPassportKoreanNameSpan(String text) {
+    final compact = text.trim().replaceAll(RegExp(r'\s+'), '');
+
+    if (!_isLikelyKoreanName(compact)) return null;
+
+    final start = text.indexOf(compact);
+
+    return _TextSpanResult(
+      value: compact,
+      start: start < 0 ? 0 : start,
+      end: start < 0 ? text.length : start + compact.length,
+    );
+  }
+
   static bool _isWaybillContext(String text) {
     final compact = text.replaceAll(' ', '').toUpperCase();
 
     return compact.contains('CJ') ||
         compact.contains('대한통운') ||
+        compact.contains('우체국') ||
+        compact.contains('접수국') ||
         compact.contains('택배') ||
         compact.contains('운송') ||
         compact.contains('연번') ||
@@ -274,7 +800,12 @@ class PrivacyDetector {
         compact.contains('DOO') ||
         compact.contains('DO0') ||
         compact.contains('주문번') ||
-        compact.contains('주문번호');
+        compact.contains('주문번호') ||
+        compact.contains('주문처') ||
+        compact.contains('고객주문처') ||
+        compact.contains('등기번호') ||
+        compact.contains('받는분') ||
+        compact.contains('보내는분');
   }
 
   static _TextSpanResult? _extractWaybillNameSpan(
@@ -282,6 +813,9 @@ class PrivacyDetector {
         required bool isWaybillContext,
       }) {
     final compact = text.trim();
+    final nameCandidateText = compact
+        .replaceFirst(RegExp(r'^\([0-9]+/[0-9]+\)\s*'), '')
+        .trim();
 
     final blacklist = {
       '오전',
@@ -310,17 +844,30 @@ class PrivacyDetector {
       '이름',
       '직책',
       '소속',
+      '성과분석',
+      '주간보고',
+      '월간보고',
+      '광고운영',
+      '콘텐츠제작',
+      'SNS운영',
+      '업무내용',
+      '지급조건',
+      '계약개요',
       '계좌번호',
       '생년월일',
       '주민번호',
       '주민등록번호',
     };
 
-    if (blacklist.contains(compact)) return null;
+    if (blacklist.contains(compact) || blacklist.contains(nameCandidateText)) {
+      return null;
+    }
 
+    // OCR이 마스킹 문자를 *, x 뿐 아니라 O/0/ㅇ/○/●처럼 잘못 읽는 경우를 보완한다.
+    // 예: 임*진, 임진O0, 김플*, 이O영 등
     final maskedMatch = RegExp(
-      r'^([가-힣]{1,3}[\*＊xX][가-힣]{0,2}|[가-힣]{1,2}[\*＊xX][가-힣]{1,2})$',
-    ).firstMatch(compact);
+      r'^([가-힣]{1,3}[\*＊xXoO0ㅇ○●•]{1,2}[가-힣]{0,2}|[가-힣]{1,2}[\*＊xXoO0ㅇ○●•]{1,2}[가-힣]{1,2})$',
+    ).firstMatch(nameCandidateText);
 
     if (maskedMatch != null) {
       final value = maskedMatch.group(1);
@@ -337,7 +884,7 @@ class PrivacyDetector {
 
     if (!isWaybillContext) return null;
 
-    final plainMatch = RegExp(r'^([가-힣]{2,4})$').firstMatch(compact);
+    final plainMatch = RegExp(r'^([가-힣]{2,4})$').firstMatch(nameCandidateText);
     if (plainMatch == null) return null;
 
     final value = plainMatch.group(1);
@@ -363,21 +910,11 @@ class PrivacyDetector {
     final labelLine = lines[labelIndex];
     final labelRect = labelLine.boundingBox;
 
-    TextLine? valueLine;
-
-    for (final candidate in lines) {
-      if (candidate == labelLine) continue;
-
-      final rect = candidate.boundingBox;
-
-      final sameRow = (rect.center.dy - labelRect.center.dy).abs() < 18;
-      final isRightSide = rect.left > labelRect.right + 40;
-
-      if (sameRow && isRightSide) {
-        valueLine = candidate;
-        break;
-      }
-    }
+    final valueLine = _findTableValueLine(
+      lines: lines,
+      labelLine: labelLine,
+      labelType: labelType,
+    );
 
     if (valueLine == null) return;
 
@@ -394,11 +931,14 @@ class PrivacyDetector {
           spans: spans,
           line: valueLine,
           span: waybillName,
-          type: 'WAYBILL_NAME',
+          type: 'NAME',
           confidence: 'MEDIUM',
         );
       } else {
-        final names = _extractNameSpans(valueText);
+        final names = _extractNameSpans(
+          valueText,
+          allowPlainName: true,
+        );
         for (final name in names) {
           _addManualSpan(
             spans: spans,
@@ -510,6 +1050,7 @@ class PrivacyDetector {
           'RRN',
           'PARTIAL_RRN',
           'WAYBILL_CODE',
+          'REGISTER_NUMBER',
         },
       );
       return;
@@ -524,6 +1065,95 @@ class PrivacyDetector {
         confidence: 'MEDIUM',
       );
       return;
+    }
+  }
+
+  static TextLine? _findTableValueLine({
+    required List<TextLine> lines,
+    required TextLine labelLine,
+    required String labelType,
+  }) {
+    final labelRect = labelLine.boundingBox;
+    final candidates = <_TableValueCandidate>[];
+
+    for (final candidate in lines) {
+      if (candidate == labelLine) continue;
+
+      final rect = candidate.boundingBox;
+      final text = candidate.text.trim();
+      if (text.isEmpty) continue;
+      if (_isFieldLabelOnly(text)) continue;
+      if (_isTitleOrSectionHeader(text)) continue;
+      if (_isTableHeader(text)) continue;
+
+      // 표가 기울어진 사진에서는 같은 행의 값이 라벨보다 위/아래로 20~40px 정도 어긋난다.
+      // 기존 sameRow < 18 조건은 김지은 같은 담당자 값을 놓쳤으므로,
+      // 라벨 오른쪽에 있고 세로 중심이 가까운 후보를 점수화해서 선택한다.
+      final isRightSide = rect.left > labelRect.right + 20;
+      if (!isRightSide) continue;
+
+      final dx = rect.left - labelRect.right;
+      if (dx > 460) continue;
+
+      final dy = (rect.center.dy - labelRect.center.dy).abs();
+      if (dy > 55) continue;
+
+      if (!_looksValidValueForLabel(labelType, text)) continue;
+
+      // 같은 행에 가까울수록 우선, 너무 먼 오른쪽 값보다 바로 옆 값을 우선.
+      final score = dy + (dx * 0.08);
+      candidates.add(_TableValueCandidate(line: candidate, score: score));
+    }
+
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) => a.score.compareTo(b.score));
+    return candidates.first.line;
+  }
+
+  static bool _looksValidValueForLabel(String labelType, String text) {
+    final compact = text.trim();
+    if (compact.isEmpty) return false;
+
+    switch (labelType) {
+      case 'NAME':
+        if (_extractWaybillNameSpan(
+          compact,
+          isWaybillContext: _isWaybillContext(compact),
+        ) !=
+            null) {
+          return true;
+        }
+        return _extractNameSpans(compact, allowPlainName: true).isNotEmpty;
+
+      case 'COMPANY':
+        return _extractCompanySpan(compact) != null;
+
+      case 'DEPARTMENT':
+        return _extractDepartmentSpan(compact) != null;
+
+      case 'POSITION':
+        return _extractPositionSpan(compact) != null;
+
+      case 'PHONE':
+        return _phoneRegex.hasMatch(compact);
+
+      case 'EMAIL':
+        return _emailRegex.hasMatch(compact);
+
+      case 'ADDRESS':
+        return _extractAddressSpan(compact) != null;
+
+      case 'RRN':
+        return _rrnRegex.hasMatch(compact) || _partialRrnRegex.hasMatch(compact);
+
+      case 'ACCOUNT_NUMBER':
+        return _accountRegex.hasMatch(compact);
+
+      case 'BIRTH_DATE':
+        return _dateRegex.hasMatch(compact);
+
+      default:
+        return true;
     }
   }
 
@@ -735,9 +1365,9 @@ class PrivacyDetector {
         'COMPANY',
         'DEPARTMENT',
         'POSITION',
-        'WAYBILL_NAME',
         'WAYBILL_CODE',
         'WAYBILL_ORDER_NUMBER',
+        'REGISTER_NUMBER',
       },
     )) {
       return;
@@ -988,6 +1618,16 @@ class PrivacyDetector {
       '보내는이',
       '받는이',
       '내는이',
+      '성과분석',
+      '주간보고',
+      '월간보고',
+      '광고운영',
+      '콘텐츠제작',
+      'SNS운영',
+      '업무내용',
+      '지급조건',
+      '계약개요',
+      '위탁업무내용',
     ];
 
     return labels.contains(compact);
@@ -996,13 +1636,31 @@ class PrivacyDetector {
   static String? _labelType(String text) {
     final compact = text.replaceAll(' ', '');
 
-    if (compact == '이름' || compact == '성명' || compact == '서명인') {
+    // OCR이 표 라벨을 한 글자씩 분리하는 경우 보완.
+    // 예: '성' + '명:' 이 각각 다른 TextLine으로 분리되면 기존 '성명' 라벨 탐지가 실패한다.
+    // 이때 값 영역 오른쪽의 이름을 찾기 위해 '명:' 단독 라인도 NAME 라벨로 인정한다.
+    if (compact == '이름' ||
+        compact == '성명' ||
+        compact == '명:' ||
+        compact == '명：' ||
+        compact == '서명인' ||
+        compact == '담당자' ||
+        compact.contains('주문인') ||
+        compact.contains('구문인') ||
+        compact.contains('주문처') ||
+        compact.contains('수령인') ||
+        compact.contains('받는분') ||
+        compact.contains('받는사람')) {
       return 'NAME';
     }
 
     if (compact.contains('회사명')) return 'COMPANY';
-    if (compact == '소속') return 'DEPARTMENT';
-    if (compact == '직책') return 'POSITION';
+    if (compact == '소속' || compact == '속:' || compact == '속：') {
+      return 'DEPARTMENT';
+    }
+    if (compact == '직책' || compact == '책:' || compact == '책：') {
+      return 'POSITION';
+    }
 
     if (compact.contains('주민등록번호') || compact.contains('주민번호')) {
       return 'RRN';
@@ -1043,6 +1701,15 @@ class PrivacyDetector {
         compact.contains('입금') ||
         compact.contains('출금') ||
         compact.contains('자동이체');
+  }
+
+  static bool _hasRegisterNumberContext(String text) {
+    final compact = text.replaceAll(' ', '');
+
+    return compact.contains('등기번호') ||
+        compact.contains('등기') ||
+        compact.contains('송장번호') ||
+        compact.contains('운송장번호');
   }
 
   static bool _looksLikeAccountOnly(String text) {
@@ -1090,10 +1757,57 @@ class PrivacyDetector {
     return false;
   }
 
+  static bool _hasAddressCoreToken(String compact) {
+    if (compact.isEmpty) return false;
+
+    // 실제 주소를 구성하는 핵심 토큰만 허용한다.
+    // 일반 문서 용어(성과분석, 월간보고 등)가 주소로 잡히는 것을 방지하기 위한 화이트리스트다.
+    return RegExp(
+      r'(특별시|광역시|[가-힣]{1,10}시|[가-힣]{1,10}군|[가-힣]{1,10}구|[가-힣]{1,10}읍|[가-힣]{1,10}면|[가-힣]{1,10}동|[가-힣]{1,10}리|[0-9]+로|[0-9]+길|[0-9]+번길|[0-9]+가길|[0-9]+번지|[0-9]+층|[0-9]+호|아파트|빌라|오피스텔|빌딩|주택|맨션|타운|하우스|마을|단지)',
+    ).hasMatch(compact);
+  }
+
+  static String _normalizeAddressOcrCompact(String text) {
+    var value = text.replaceAll(' ', '');
+
+    // 행정구역명에서 자주 발생하는 OCR 오인식 보정.
+    // 특정 샘플 값에만 의존하지 않고, 주소 판단용 문자열에만 적용한다.
+    value = value.replaceFirst(RegExp(r'^1안시'), '천안시');
+    value = value.replaceFirst(RegExp(r'^치안시'), '천안시');
+    value = value.replaceFirst(RegExp(r'^전안시'), '천안시');
+    value = value.replaceAll('동남구', '동남구');
+
+    return value;
+  }
+
   static _TextSpanResult? _extractAddressSpan(String text) {
-    final compact = text.replaceAll(' ', '');
+    final compact = _normalizeAddressOcrCompact(text);
 
     if (_isNonAddressSentence(compact)) return null;
+
+    // 주소 탐지 화이트리스트 강화:
+    // 주소 핵심 토큰이 전혀 없으면 주소 후보에서 제외한다.
+    // 단, 괄호형 상세주소는 아래 별도 정규식에서 다시 검사한다.
+    final bool hasAddressCoreToken = _hasAddressCoreToken(compact);
+
+    // 운송장/주소에서 보조 주소가 "(당주동 15-7)" 또는
+    // "| (당주동 15-7)"처럼 별도 라인으로 인식되는 경우를 주소로 탐지한다.
+    final parenthesizedDongDetailRegex = RegExp(
+      r'^[\|\s]*\(?[가-힣]{1,10}(동|읍|면|리)\s*[0-9]{1,5}[-]?[0-9]{0,5}\)?$',
+    );
+
+    if (parenthesizedDongDetailRegex.hasMatch(compact)) {
+      final cleaned = text.replaceAll('|', '').trim();
+      final start = text.indexOf(cleaned);
+
+      return _TextSpanResult(
+        value: cleaned,
+        start: start < 0 ? 0 : start,
+        end: start < 0 ? text.length : start + cleaned.length,
+      );
+    }
+
+    if (!hasAddressCoreToken) return null;
 
     final hasKoreanAddressStart = RegExp(
       r'(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|충청남도|천안시|고양시|종로구|동남구|덕양구|병천면)',
@@ -1129,6 +1843,24 @@ class PrivacyDetector {
       );
     }
 
+    // 예: OCR이 '천안시'를 '1안시'로 읽거나,
+    // '동남구 병천면 가전 14'처럼 읍/면/구 + 마을/번지 형태만 남는 상세 주소 보완.
+    final hasAdminAddressUnit = RegExp(
+      r'([가-힣0-9]{1,10}시|[가-힣0-9]{1,10}군|[가-힣0-9]{1,10}구|[가-힣0-9]{1,10}읍|[가-힣0-9]{1,10}면|[가-힣0-9]{1,10}동|[가-힣0-9]{1,10}리)',
+    ).allMatches(compact).length >= 2;
+
+    final hasVillageLikeDetail = RegExp(
+      r'[가-힣]{1,12}[0-9]{1,5}([,-]?[0-9]{1,5})?',
+    ).hasMatch(compact);
+
+    if (hasAdminAddressUnit && hasDigit && hasVillageLikeDetail) {
+      return _TextSpanResult(
+        value: text,
+        start: 0,
+        end: text.length,
+      );
+    }
+
     final roadAddressRegex = RegExp(
       r'(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|천안|충청남도)'
       r'[가-힣0-9\s,\-\(\)]*'
@@ -1152,6 +1884,25 @@ class PrivacyDetector {
     );
 
     if (detailAddressRegex.hasMatch(compact)) {
+      return _TextSpanResult(
+        value: text,
+        start: 0,
+        end: text.length,
+      );
+    }
+
+    final inlineDetailAddressRegex = RegExp(
+      r'^[0-9]{1,5}\s*\([가-힣0-9]{1,12}(동|읍|면|리|가)\)\s*[0-9]{0,4}\s*(층|호)?[가-힣A-Za-z0-9\s]*$',
+    );
+
+    final parenthesizedDetailInsideLineRegex = RegExp(
+      r'\([가-힣0-9]{1,12}(동|읍|면|리|가)\)',
+    );
+
+    if (inlineDetailAddressRegex.hasMatch(compact) ||
+        (parenthesizedDetailInsideLineRegex.hasMatch(compact) &&
+            RegExp(r'[0-9]').hasMatch(compact) &&
+            RegExp(r'(층|호|빌딩|오토|센터|타워|상가|아파트|오피스텔)').hasMatch(compact))) {
       return _TextSpanResult(
         value: text,
         start: 0,
@@ -1427,7 +2178,10 @@ class PrivacyDetector {
     return null;
   }
 
-  static List<_TextSpanResult> _extractNameSpans(String text) {
+  static List<_TextSpanResult> _extractNameSpans(
+      String text, {
+        bool allowPlainName = false,
+      }) {
     final List<_TextSpanResult> results = [];
     final compact = text.trim();
 
@@ -1439,11 +2193,12 @@ class PrivacyDetector {
     if (_isGeneralDocumentTerm(compact)) return results;
 
     final patterns = [
+      RegExp(r'(?:주문인|구문인|고객\s*주문처|주문처|수령인|받는\s*분|받는\s*사람|고객명|고객)\s*[:：]\s*([가-힣]{2,4}[\*＊xX]?)'),
       RegExp(r'대표이사\s*([가-힣]{2,4})'),
       RegExp(r'대표\s*([가-힣]{2,4})'),
       RegExp(r'본인\s*([가-힣]{2,4})'),
       RegExp(r'신청인\s*([가-힣]{2,4})'),
-      RegExp(r'고객\s*([가-힣]{2,4})'),
+      RegExp(r'고객(?:명)?\s*[:：]\s*([가-힣]{2,4})'),
       RegExp(r'배우자\s*([가-힣]{2,4})'),
       RegExp(r'직원은\s*([가-힣]{2,4})'),
       RegExp(r'담당자는\s*([가-힣]{2,4})'),
@@ -1478,38 +2233,54 @@ class PrivacyDetector {
       }
     }
 
-    final plainName = _extractPlainKoreanName(compact);
-    if (plainName != null) {
-      results.add(plainName);
+    if (allowPlainName || _hasNameHonorific(compact)) {
+      final plainName = _extractPlainKoreanName(compact);
+      if (plainName != null) {
+        results.add(plainName);
+      }
     }
 
     return results;
   }
 
-  static _TextSpanResult? _extractPlainKoreanName(String text) {
+  static bool _hasNameHonorific(String text) {
     final compact = text.trim();
+    return RegExp(r'(님|씨|귀하|\(인\)|\(서명\))$').hasMatch(compact);
+  }
 
-    if (_isFieldLabelOnly(compact)) return null;
-    if (_extractDepartmentSpan(compact) != null) return null;
-    if (_extractPositionSpan(compact) != null) return null;
-    if (_extractCompanySpan(compact) != null) return null;
-    if (_isGeneralDocumentTerm(compact)) return null;
-    if (_looksLikeBuildingOrHousingName(compact)) return null;
+  static _TextSpanResult? _extractPlainKoreanName(String text) {
+    final original = text.trim();
 
-    final match = RegExp(r'^([가-힣]{2,4})\s*(님|씨|\(인\)|\(서명\))?$')
-        .firstMatch(compact);
+    if (_isFieldLabelOnly(original)) return null;
+    if (_extractDepartmentSpan(original) != null) return null;
+    if (_extractPositionSpan(original) != null) return null;
+    if (_extractCompanySpan(original) != null) return null;
+    if (_isGeneralDocumentTerm(original)) return null;
+    if (_looksLikeBuildingOrHousingName(original.replaceAll(' ', ''))) {
+      return null;
+    }
 
+    // OCR이 운송장 이름을 "홍 길동님", "김 철수 님"처럼
+    // 이름 내부 공백 포함 형태로 인식하는 경우를 보완한다.
+    final spacedNameRegex = RegExp(
+      r'^(([가-힣]\s*){2,4})(님|씨|귀하|\(인\)|\(서명\))?$',
+    );
+
+    final match = spacedNameRegex.firstMatch(original);
     if (match == null) return null;
 
-    final name = match.group(1);
-    if (name == null) return null;
-    if (!_isLikelyKoreanName(name)) return null;
+    final rawNameWithSpaces = match.group(1);
+    if (rawNameWithSpaces == null) return null;
 
-    final start = compact.indexOf(name);
-    final end = start + name.length;
+    final normalizedName = rawNameWithSpaces.replaceAll(RegExp(r'\s+'), '');
+
+    if (!_isLikelyKoreanName(normalizedName)) return null;
+
+    final start = original.indexOf(rawNameWithSpaces);
+    final end = start + rawNameWithSpaces.length;
 
     return _TextSpanResult(
-      value: name,
+      value: normalizedName,
       start: start,
       end: end,
     );
@@ -1559,6 +2330,16 @@ class PrivacyDetector {
       '보내는이',
       '받는이',
       '내는이',
+      '성과분석',
+      '주간보고',
+      '월간보고',
+      '광고운영',
+      '콘텐츠제작',
+      'SNS운영',
+      '업무내용',
+      '지급조건',
+      '계약개요',
+      '위탁업무내용',
     ];
 
     if (terms.contains(compact)) return true;
@@ -1566,6 +2347,11 @@ class PrivacyDetector {
     if (compact.endsWith('요건')) return true;
     if (compact.endsWith('업무')) return true;
     if (compact.endsWith('분야')) return true;
+    if (compact.endsWith('보고')) return true;
+    if (compact.endsWith('분석')) return true;
+    if (compact.endsWith('운영')) return true;
+    if (compact.endsWith('제작')) return true;
+    if (compact.endsWith('조건')) return true;
 
     return false;
   }
@@ -1663,6 +2449,16 @@ class PrivacyDetector {
       '보내는이',
       '받는이',
       '내는이',
+      '성과분석',
+      '주간보고',
+      '월간보고',
+      '광고운영',
+      '콘텐츠제작',
+      'SNS운영',
+      '업무내용',
+      '지급조건',
+      '계약개요',
+      '위탁업무내용',
     ];
 
     if (blacklist.contains(text)) return false;
@@ -1692,7 +2488,7 @@ class PrivacyDetector {
   static bool _hasLikelyKoreanSurname(String text) {
     if (text.isEmpty) return false;
 
-    final cleaned = text.replaceAll(RegExp(r'[\*＊xX]'), '');
+    final cleaned = text.replaceAll(RegExp(r'[\*＊xXoO0ㅇ○●•]'), '');
     if (cleaned.isEmpty) return false;
 
     final surnames = [
@@ -1740,7 +2536,59 @@ class PrivacyDetector {
       '진',
     ];
 
-    return surnames.contains(cleaned[0]);
+    final first = cleaned[0];
+    if (surnames.contains(first)) return true;
+
+    // OCR에서 성씨 한 글자가 형태가 비슷한 다른 음절로 깨지는 경우를 보완한다.
+    // 예: 임 -> 얌/일/입/림, 김 -> 긷/깁, 이 -> 1/ㅣ처럼 일부 모델에서 오인식.
+    // 여기서는 실제 표시 텍스트를 고치지 않고, 이름 후보 판정에만 보정값을 사용한다.
+    final correctedFirst = _correctOcrSurname(first);
+    if (correctedFirst == null) return false;
+
+    return surnames.contains(correctedFirst);
+  }
+
+  static String? _correctOcrSurname(String char) {
+    const corrections = {
+      // 임씨 OCR 오인식 보정
+      '얌': '임',
+      '일': '임',
+      '입': '임',
+      '림': '임',
+
+      // 김씨 OCR 오인식 보정
+      '긷': '김',
+      '깁': '김',
+      '킴': '김',
+
+      // 이씨 OCR 오인식 보정
+      'ㅣ': '이',
+      'l': '이',
+      'I': '이',
+      '1': '이',
+
+      // 박/백 계열 오인식 보정
+      '밖': '박',
+      '빅': '박',
+      '팩': '박',
+      '맥': '백',
+
+      // 최/쵀 계열 오인식 보정
+      '쵀': '최',
+      '체': '최',
+
+      // 정/전/천 계열 오인식 보정
+      '청': '정',
+      '징': '정',
+      '천': '전',
+
+      // 홍/황 계열 오인식 보정
+      '흥': '홍',
+      '횽': '홍',
+      '왕': '황',
+    };
+
+    return corrections[char];
   }
 
   static final RegExp _rrnRegex = RegExp(
@@ -1768,12 +2616,26 @@ class PrivacyDetector {
     r'[0-9]{2,6}[-][0-9]{2,6}[-][0-9]{4,8}',
   );
 
+  static final RegExp _registerNumberRegex = RegExp(
+    r'[0-9]{2,6}[-][0-9]{3,5}[-][0-9]{3,6}',
+  );
+
   static final RegExp _waybillCodeRegex = RegExp(
     r'[0-9A-Za-z]{4}[-][0-9A-Za-z]{4}[-][0-9A-Za-z]{4}',
   );
 
   static final RegExp _passportRegex = RegExp(
-    r'[A-Z][0-9]{8}',
+    // 한국 여권번호는 영문 1~2자 + 숫자/영문 혼합 7~8자 형태가 많다.
+    // 예: SM0893652, M123A4567
+    // 기존 [A-Z]{1,2}[A-Z0-9]{6,7} 패턴은 M123A4567처럼
+    // 첫 글자 뒤에 숫자가 바로 오는 9자리 값을 놓칠 수 있어 보완했다.
+    // REPUBLIC, PMKORHONG 같은 영문 단어/MRZ 일부 오탐 방지를 위해
+    // 전체 길이 8~9자 + 숫자 1개 이상 조건은 유지한다.
+    r'\b(?=[A-Z0-9]{8,9}\b)(?=[A-Z0-9]*[0-9])[A-Z]{1,2}[A-Z0-9]{7,8}\b',
+  );
+
+  static final RegExp _mrzRegex = RegExp(
+    r'^[A-Z0-9<]{20,}$',
   );
 
   static final RegExp _driverLicenseRegex = RegExp(
@@ -1783,6 +2645,116 @@ class PrivacyDetector {
   static final RegExp _dateRegex = RegExp(
     r'(19|20)[0-9]{2}[-./][0-9]{1,2}[-./][0-9]{1,2}',
   );
+
+  static List<PrivacyItem> _applyPriorityRules(List<PrivacyItem> items) {
+    final rrnItems = items.where((item) => item.type == 'RRN').toList();
+    final mrzItems = items.where((item) => item.type == 'PASSPORT_MRZ').toList();
+
+    final concretePassportDateItems = items.where((item) {
+      return item.type == 'BIRTH_DATE' ||
+          item.type == 'PASSPORT_ISSUE_DATE' ||
+          item.type == 'PASSPORT_EXPIRY_DATE';
+    }).toList();
+
+    return items.where((item) {
+      final itemRect = item.rect;
+
+      // 1) 주민번호와 면허번호가 같은 영역에서 겹치면 주민번호를 우선한다.
+      if (item.type == 'DRIVER_LICENSE') {
+        if (itemRect == null) return true;
+
+        for (final rrn in rrnItems) {
+          final rrnRect = rrn.rect;
+          if (rrnRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - rrnRect.center.dy).abs() < 12;
+          final visuallyOverlaps = _rectOverlapRatio(itemRect, rrnRect) >= 0.45;
+          final centerInsideRrn = rrnRect.inflate(6).contains(itemRect.center);
+
+          if (sameLine && (visuallyOverlaps || centerInsideRrn)) {
+            return false;
+          }
+        }
+      }
+
+      // 2) 여권번호 오탐 제거: REPUBLIC 같은 국가명/기관명은 여권번호가 아니다.
+      if (item.type == 'PASSPORT_NUMBER') {
+        final normalized = _normalizePassportText(item.text);
+
+        if (!_passportRegex.hasMatch(normalized)) return false;
+        if (!RegExp(r'[0-9]').hasMatch(normalized)) return false;
+
+        final passportNumberBlacklist = {
+          'REPUBLIC',
+          'REPUBLICOFKOREA',
+          'PMKORHONG',
+          'MINISTRY',
+          'FOREIGNAFFAIRS',
+        };
+
+        if (passportNumberBlacklist.contains(normalized)) return false;
+      }
+
+      // 3) 여권 하단 코드(MRZ)는 넓은 전체 줄을 유지한다.
+      //    같은 줄 내부에서 잘려 생성된 여권번호/이름/날짜 세부 박스는 제거한다.
+      //    단, 여권 상단의 실제 여권번호/이름/날짜는 MRZ와 위치가 달라서 유지된다.
+      if (item.type != 'PASSPORT_MRZ' && itemRect != null) {
+        for (final mrz in mrzItems) {
+          final mrzRect = mrz.rect;
+          if (mrzRect == null) continue;
+
+          final sameMrzLine = (itemRect.center.dy - mrzRect.center.dy).abs() < 10;
+          final insideMrz = _rectOverlapRatio(itemRect, mrzRect) >= 0.60 ||
+              mrzRect.inflate(4).contains(itemRect.center);
+
+          if (sameMrzLine && insideMrz) {
+            return false;
+          }
+        }
+      }
+
+      // 4) PASSPORT_DATE는 임시/포괄 타입이다.
+      //    같은 영역에 생년월일/발급일/만료일처럼 구체 타입이 있으면 구체 타입만 남긴다.
+      if (item.type == 'PASSPORT_DATE' && itemRect != null) {
+        for (final concrete in concretePassportDateItems) {
+          final concreteRect = concrete.rect;
+          if (concreteRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - concreteRect.center.dy).abs() < 8;
+          final overlaps = _rectOverlapRatio(itemRect, concreteRect) >= 0.80;
+
+          if (sameLine && overlaps) {
+            return false;
+          }
+        }
+      }
+
+      // 5) 발급기관은 MRZ가 아니다. OCR에서 긴 영문 대문자 라인이 MRZ로 오탐될 수 있어 제외한다.
+      if (item.type == 'PASSPORT_MRZ') {
+        final normalized = _normalizeMrzText(item.text);
+        if (!_isPassportMrzLine(normalized)) return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
+  static double _rectOverlapRatio(Rect a, Rect b) {
+    final left = a.left > b.left ? a.left : b.left;
+    final top = a.top > b.top ? a.top : b.top;
+    final right = a.right < b.right ? a.right : b.right;
+    final bottom = a.bottom < b.bottom ? a.bottom : b.bottom;
+
+    if (right <= left || bottom <= top) return 0.0;
+
+    final intersection = (right - left) * (bottom - top);
+    final smallerArea = a.width * a.height < b.width * b.height
+        ? a.width * a.height
+        : b.width * b.height;
+
+    if (smallerArea <= 0) return 0.0;
+    return intersection / smallerArea;
+  }
 
   static List<PrivacyItem> _removeDuplicates(List<PrivacyItem> items) {
     final seen = <String>{};
@@ -1801,6 +2773,17 @@ class PrivacyDetector {
 
     return unique;
   }
+}
+
+
+class _TableValueCandidate {
+  final TextLine line;
+  final double score;
+
+  const _TableValueCandidate({
+    required this.line,
+    required this.score,
+  });
 }
 
 class _DetectedSpan {
