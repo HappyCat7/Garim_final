@@ -2,27 +2,23 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/blur_region.dart';
 import '../models/detection_result.dart';
 
 enum _RH { tl, t, tr, r, br, b, bl, l }
 
-Offset _rotPt(Offset p, Offset c, double angle) {
+Offset _rotPt(Offset p, Offset c, double a) {
   final dx = p.dx - c.dx, dy = p.dy - c.dy;
-  final cos = math.cos(angle), sin = math.sin(angle);
+  final cos = math.cos(a), sin = math.sin(a);
   return Offset(c.dx + dx * cos - dy * sin, c.dy + dx * sin + dy * cos);
 }
 
 Offset _handleBase(_RH h, Rect dr) => switch (h) {
-  _RH.tl => dr.topLeft,
-  _RH.t  => dr.topCenter,
-  _RH.tr => dr.topRight,
-  _RH.r  => dr.centerRight,
-  _RH.br => dr.bottomRight,
-  _RH.b  => dr.bottomCenter,
-  _RH.bl => dr.bottomLeft,
-  _RH.l  => dr.centerLeft,
+  _RH.tl => dr.topLeft,   _RH.t => dr.topCenter,  _RH.tr => dr.topRight,
+  _RH.r  => dr.centerRight, _RH.br => dr.bottomRight,
+  _RH.b  => dr.bottomCenter, _RH.bl => dr.bottomLeft, _RH.l => dr.centerLeft,
 };
 
 class BlurRegionOverlay extends StatefulWidget {
@@ -31,10 +27,13 @@ class BlurRegionOverlay extends StatefulWidget {
   final Size displaySize;
   final bool drawMode;
   final TransformationController transformationController;
+  final String? selectedId;
 
   final void Function(BlurRegion) onRegionUpdated;
   final void Function(Rect) onRegionAdded;
   final void Function(String) onRegionDeleted;
+  final VoidCallback? onEditCommit;
+  final void Function(String? id) onSelectionChanged;
 
   const BlurRegionOverlay({
     super.key,
@@ -46,6 +45,9 @@ class BlurRegionOverlay extends StatefulWidget {
     required this.onRegionUpdated,
     required this.onRegionAdded,
     required this.onRegionDeleted,
+    required this.onSelectionChanged,
+    this.selectedId,
+    this.onEditCommit,
   });
 
   @override
@@ -62,20 +64,31 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
 
   Rect _toDisp(Rect img) => Rect.fromLTWH(
       img.left * _sx, img.top * _sy, img.width * _sx, img.height * _sy);
-
   Rect _toImg(Rect d) => Rect.fromLTWH(
       d.left / _sx, d.top / _sy, d.width / _sx, d.height / _sy);
 
-  List<Offset> _corners(Rect dr, double angle) => [
-    dr.topLeft, dr.topRight, dr.bottomRight, dr.bottomLeft
-  ].map((p) => _rotPt(p, dr.center, angle)).toList();
+  List<Offset> _corners(Rect dr, double a) =>
+      [dr.topLeft, dr.topRight, dr.bottomRight, dr.bottomLeft]
+          .map((p) => _rotPt(p, dr.center, a)).toList();
 
   double get _zoomScale =>
       widget.transformationController.value.getMaxScaleOnAxis();
-
   RenderBox? get _renderBox => context.findRenderObject() as RenderBox?;
 
-  // [Req 5] 리사이즈 콜백 — 줌 스케일 보정 포함
+  @override
+  void didUpdateWidget(BlurRegionOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selectedId != _selectedId) {
+      _selectedId = widget.selectedId;
+    }
+  }
+
+  void _select(String? id) {
+    if (_selectedId == id) return;
+    setState(() => _selectedId = id);
+    widget.onSelectionChanged(id);
+  }
+
   void Function(Offset) _resizeCb(BlurRegion r, _RH handle) => (raw) {
     final cd = raw / _zoomScale;
     final id = Offset(cd.dx / _sx, cd.dy / _sy);
@@ -97,10 +110,8 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
       case _RH.bl: l += d.dx; b += d.dy; break;
       case _RH.l:  l += d.dx;            break;
     }
-    l = l.clamp(0.0, sz.width);
-    t = t.clamp(0.0, sz.height);
-    r = r.clamp(0.0, sz.width);
-    b = b.clamp(0.0, sz.height);
+    l = l.clamp(0.0, sz.width); t = t.clamp(0.0, sz.height);
+    r = r.clamp(0.0, sz.width); b = b.clamp(0.0, sz.height);
     const kMin = 8.0;
     if ((r - l).abs() < kMin) r = l + kMin;
     if ((b - t).abs() < kMin) b = t + kMin;
@@ -120,9 +131,14 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () { if (_selectedId != null) _select(null); },
+            ),
+          ),
           for (final region in widget.regions) _buildRegion(region),
           if (widget.drawMode && _drawingRect != null) _buildDrawPreview(),
-          // [Req 2] 그리기 모드에서만 pan 인터셉터 활성
           if (widget.drawMode) _buildDrawOverlay(),
         ],
       ),
@@ -132,53 +148,78 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
   Widget _buildRegion(BlurRegion region) {
     final dr = _toDisp(region.boundingBox);
     final isSel = _selectedId == region.id;
-    final corners = _corners(dr, region.angle);
+    final isRotated = region.angle.abs() > 0.01;
+    final corners = isRotated ? _corners(dr, region.angle) : null;
 
     return Stack(
       clipBehavior: Clip.none,
       children: [
         if (region.isBlurred)
-          _BlurPreview(corners: corners, displaySize: widget.displaySize, region: region),
+          if (!isRotated)
+            Positioned(
+              left: dr.left, top: dr.top,
+              width: dr.width, height: dr.height,
+              child: ClipRect(child: _buildEffect(region)),
+            )
+          else
+            Positioned(
+              left: 0, top: 0,
+              width: widget.displaySize.width,
+              height: widget.displaySize.height,
+              child: ClipPath(
+                clipper: _PolygonClipper(corners!),
+                clipBehavior: Clip.hardEdge,
+                child: _buildEffect(region),
+              ),
+            ),
 
-        // [Req 1, 5] 박스 바디 탭 GestureDetector
-        // translucent: 탭 처리, Pan은 InteractiveViewer 통과
         Positioned(
           left: dr.left, top: dr.top,
           child: Transform.rotate(
             angle: region.angle,
             alignment: Alignment.center,
             child: GestureDetector(
-              // [Req 5] translucent + 최소 터치 크기 보장
-              behavior: HitTestBehavior.translucent,
-              onTap: () {
-                setState(() => _selectedId = region.id);
-                // [Req 1] 잠금 상태 체크 후 블러 토글
-                if (!region.isLocked) {
-                  widget.onRegionUpdated(
-                      region.copyWith(isBlurred: !region.isBlurred));
-                }
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (_) {
+                HapticFeedback.lightImpact();
+                _select(region.id);
               },
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                child: SizedBox(
-                  width: dr.width, height: dr.height,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      CustomPaint(
-                        size: Size(dr.width, dr.height),
-                        painter: _BoxBorderPainter(
-                          color: region.color,
-                          isSelected: isSel,
-                          isActive: region.isBlurred,
-                        ),
+              onPanStart: (_) {
+                HapticFeedback.selectionClick();
+                _select(region.id);
+              },
+              onPanUpdate: (d) {
+                final delta = d.delta / _zoomScale;
+                final dx = delta.dx / _sx;
+                final dy = delta.dy / _sy;
+
+                final shiftedBox = region.boundingBox.shift(Offset(dx, dy));
+                final clampedLeft = shiftedBox.left.clamp(0.0, widget.imageSize.width - shiftedBox.width);
+                final clampedTop = shiftedBox.top.clamp(0.0, widget.imageSize.height - shiftedBox.height);
+
+                final finalBox = Rect.fromLTWH(clampedLeft, clampedTop, shiftedBox.width, shiftedBox.height);
+                widget.onRegionUpdated(region.copyWith(boundingBox: finalBox));
+              },
+              onPanEnd: (_) => widget.onEditCommit?.call(),
+
+              child: SizedBox(
+                width: dr.width, height: dr.height,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    CustomPaint(
+                      size: Size(dr.width, dr.height),
+                      painter: _BoxBorderPainter(
+                        color: region.color,
+                        isSelected: isSel,
+                        isActive: region.isBlurred,
                       ),
-                      Positioned(
-                        top: -22, left: 0,
-                        child: _BoxLabel(region: region),
-                      ),
-                    ],
-                  ),
+                    ),
+                    Positioned(
+                      top: -22, left: 0,
+                      child: _BoxLabel(region: region),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -193,18 +234,61 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
             imageSize: widget.imageSize,
             resizeCb: _resizeCb,
             overlayRenderBox: () => _renderBox,
-            onRotate: (a) => widget.onRegionUpdated(region.copyWith(angle: a)),
-            onToggleLock: () => widget.onRegionUpdated(
-                region.copyWith(isLocked: !region.isLocked)),
+            onRotate: (a) =>
+                widget.onRegionUpdated(region.copyWith(angle: a)),
             onDelete: region.isManual
                 ? () {
               widget.onRegionDeleted(region.id);
-              setState(() => _selectedId = null);
+              _select(null);
             }
                 : null,
+            onCommit: widget.onEditCommit,
           ),
       ],
     );
+  }
+
+  Widget _buildEffect(BlurRegion region) {
+    final intensity = region.blurIntensity;
+
+    switch (region.effect) {
+      case BlurEffect.gaussian:
+        return BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: intensity, sigmaY: intensity),
+          child: Container(color: Colors.transparent),
+        );
+
+      case BlurEffect.frostedGlass:
+      // [수정됨] 화면상에서 크리스탈 산란(Scatter) 파편을 렌더링
+        return Stack(fit: StackFit.expand, children: [
+          BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
+            child: Container(color: Colors.transparent),
+          ),
+          CustomPaint(painter: _ScatteredGlassPainter(intensity)),
+        ]);
+
+      case BlurEffect.pixelate:
+        return Stack(fit: StackFit.expand, children: [
+          BackdropFilter(
+            filter: ui.ImageFilter.blur(
+              sigmaX: (intensity * 0.4).clamp(4, 40),
+              sigmaY: (intensity * 0.4).clamp(4, 40),
+            ),
+            child: Container(color: Colors.transparent),
+          ),
+          CustomPaint(painter: _GridPainter(intensity * 0.5 + 4)),
+        ]);
+
+      case BlurEffect.fog:
+        return Stack(fit: StackFit.expand, children: [
+          BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: intensity, sigmaY: intensity),
+            child: Container(color: Colors.transparent),
+          ),
+          Container(color: const Color(0xFFF0F0F0).withOpacity(0.55)),
+        ]);
+    }
   }
 
   Widget _buildDrawPreview() {
@@ -223,106 +307,29 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
     );
   }
 
-  Widget _buildDrawOverlay() {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onPanStart: (d) => setState(() {
-        _drawStart = d.localPosition;
-        _drawingRect = Rect.fromLTWH(d.localPosition.dx, d.localPosition.dy, 0.01, 0.01);
-        _selectedId = null;
-      }),
-      onPanUpdate: (d) {
-        if (_drawStart == null) return;
-        setState(() => _drawingRect = Rect.fromPoints(_drawStart!, d.localPosition));
-      },
-      onPanEnd: (_) {
-        if (_drawingRect != null) {
-          final n = _norm(_drawingRect!);
-          if (n.width > 20 && n.height > 20) widget.onRegionAdded(_toImg(n));
-        }
-        setState(() { _drawStart = null; _drawingRect = null; });
-      },
-      child: SizedBox(width: widget.displaySize.width, height: widget.displaySize.height),
-    );
-  }
-}
-
-// ═══ 블러 프리뷰 (BackdropFilter, 8종) ═══════════════════════════════
-class _BlurPreview extends StatelessWidget {
-  final List<Offset> corners;
-  final Size displaySize;
-  final BlurRegion region;
-
-  const _BlurPreview({
-    required this.corners,
-    required this.displaySize,
-    required this.region,
-  });
-
-  @override
-  Widget build(BuildContext context) => Positioned(
-    left: 0, top: 0,
-    width: displaySize.width, height: displaySize.height,
-    child: ClipPath(clipper: _PolygonClipper(corners), child: _effect()),
+  Widget _buildDrawOverlay() => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onPanStart: (d) => setState(() {
+      _drawStart = d.localPosition;
+      _drawingRect = Rect.fromLTWH(d.localPosition.dx, d.localPosition.dy, 0.01, 0.01);
+      _select(null);
+    }),
+    onPanUpdate: (d) {
+      if (_drawStart == null) return;
+      setState(() => _drawingRect = Rect.fromPoints(_drawStart!, d.localPosition));
+    },
+    onPanEnd: (_) {
+      if (_drawingRect != null) {
+        final n = _norm(_drawingRect!);
+        if (n.width > 20 && n.height > 20) widget.onRegionAdded(_toImg(n));
+      }
+      setState(() { _drawStart = null; _drawingRect = null; });
+    },
+    child: SizedBox(width: widget.displaySize.width, height: widget.displaySize.height),
   );
-
-  Widget _effect() {
-    switch (region.effect) {
-      case BlurEffect.blackBar:
-        return const ColoredBox(color: Colors.black);
-      case BlurEffect.whiteBar:
-        return const ColoredBox(color: Colors.white);
-      case BlurEffect.redBar:
-        return const ColoredBox(color: Color(0xFFDC1E1E));
-      case BlurEffect.gaussian:
-        return BackdropFilter(
-          filter: ui.ImageFilter.blur(
-            sigmaX: region.blurIntensity.clamp(1.0, 30.0),
-            sigmaY: region.blurIntensity.clamp(1.0, 30.0),
-          ),
-          child: Container(color: Colors.transparent),
-        );
-      case BlurEffect.mosaic:
-        return Stack(children: [
-          BackdropFilter(
-            filter: ui.ImageFilter.blur(
-              sigmaX: (region.blurIntensity * 0.8).clamp(4.0, 40.0),
-              sigmaY: (region.blurIntensity * 0.8).clamp(4.0, 40.0),
-            ),
-            child: Container(color: Colors.transparent),
-          ),
-          CustomPaint(painter: _GridPainter(region.blurIntensity * 0.2 + 4)),
-        ]);
-      case BlurEffect.heavyPixelate:
-        return Stack(children: [
-          BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 25, sigmaY: 25),
-            child: Container(color: Colors.transparent),
-          ),
-          CustomPaint(painter: _GridPainter(region.blurIntensity * 0.5 + 16)),
-        ]);
-      case BlurEffect.frostedGlass:
-        return BackdropFilter(
-          filter: ui.ImageFilter.blur(
-            sigmaX: region.blurIntensity.clamp(1.0, 20.0),
-            sigmaY: region.blurIntensity.clamp(1.0, 20.0),
-          ),
-          child: Container(color: Colors.white.withOpacity(0.28)),
-        );
-      case BlurEffect.grayscaleBlur:
-        return Stack(children: [
-          BackdropFilter(
-            filter: ui.ImageFilter.blur(
-              sigmaX: region.blurIntensity.clamp(1.0, 20.0),
-              sigmaY: region.blurIntensity.clamp(1.0, 20.0),
-            ),
-            child: Container(color: Colors.transparent),
-          ),
-          Container(color: Colors.grey.withOpacity(0.45)),
-        ]);
-    }
-  }
 }
+
+// ═══ Painters ════════════════════════════════════════════════════════
 
 class _PolygonClipper extends CustomClipper<Path> {
   final List<Offset> corners;
@@ -336,7 +343,7 @@ class _GridPainter extends CustomPainter {
   const _GridPainter(this.tileSize);
   @override
   void paint(Canvas canvas, Size size) {
-    final p = Paint()..color = Colors.white.withOpacity(0.1)..strokeWidth = 0.5;
+    final p = Paint()..color = Colors.black.withOpacity(0.12)..strokeWidth = 0.5;
     for (double x = 0; x < size.width; x += tileSize) {
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), p);
     }
@@ -347,6 +354,35 @@ class _GridPainter extends CustomPainter {
   @override bool shouldRepaint(_GridPainter o) => tileSize != o.tileSize;
 }
 
+// ─── [수정됨] 깨진 유리(산란) 효과 UI 프리뷰 Painter ──────────────────────────
+class _ScatteredGlassPainter extends CustomPainter {
+  final double intensity;
+  const _ScatteredGlassPainter(this.intensity);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rand = math.Random(42);
+    final paint = Paint()..style = PaintingStyle.fill;
+
+    int numDots = (size.width * size.height / (60 - intensity.clamp(5, 55))).toInt();
+
+    for (int i = 0; i < numDots; i++) {
+      double x = rand.nextDouble() * size.width;
+      double y = rand.nextDouble() * size.height;
+      double r = rand.nextDouble() * (intensity * 0.08).clamp(1.0, 3.5);
+
+      paint.color = rand.nextBool()
+          ? Colors.white.withOpacity(rand.nextDouble() * 0.6 + 0.2)
+          : Colors.white.withOpacity(0.1);
+
+      canvas.drawCircle(Offset(x, y), r, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ScatteredGlassPainter o) => intensity != o.intensity;
+}
+
 class _BoxBorderPainter extends CustomPainter {
   final Color color;
   final bool isSelected, isActive;
@@ -355,6 +391,14 @@ class _BoxBorderPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final c = isActive ? color : color.withOpacity(0.35);
+    if (isSelected) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius((Offset.zero & size).inflate(4), const Radius.circular(8)),
+        Paint()
+          ..color = c.withOpacity(0.4)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 8),
+      );
+    }
     canvas.drawRRect(
       RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(4)),
       Paint()..color = c..style = PaintingStyle.stroke..strokeWidth = isSelected ? 3.0 : 2.0,
@@ -362,7 +406,7 @@ class _BoxBorderPainter extends CustomPainter {
     if (isSelected) {
       canvas.drawRRect(
         RRect.fromRectAndRadius((Offset.zero & size).deflate(1), const Radius.circular(3)),
-        Paint()..color = c.withOpacity(0.1)..style = PaintingStyle.fill,
+        Paint()..color = c.withOpacity(0.09)..style = PaintingStyle.fill,
       );
     }
   }
@@ -377,41 +421,24 @@ class _BoxLabel extends StatelessWidget {
   const _BoxLabel({required this.region});
 
   static String _el(BlurEffect e) => switch (e) {
-    BlurEffect.gaussian      => 'G',
-    BlurEffect.mosaic        => 'M',
-    BlurEffect.blackBar      => 'B',
-    BlurEffect.frostedGlass  => 'F',
-    BlurEffect.whiteBar      => 'W',
-    BlurEffect.redBar        => 'R',
-    BlurEffect.heavyPixelate => 'HP',
-    BlurEffect.grayscaleBlur => 'GS',
+    BlurEffect.gaussian     => 'G',
+    BlurEffect.frostedGlass => 'Fr',
+    BlurEffect.pixelate     => 'Px',
+    BlurEffect.fog          => 'Fg',
   };
 
   @override
   Widget build(BuildContext context) {
-    final c = region.isBlurred ? region.color : region.color.withOpacity(0.4);
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-          decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(4)),
-          child: Text('${region.label} ${_el(region.effect)}',
-              style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-        ),
-        if (region.isLocked)
-          Container(
-            margin: const EdgeInsets.only(left: 3),
-            padding: const EdgeInsets.all(3),
-            decoration: BoxDecoration(color: Colors.amber.shade700, borderRadius: BorderRadius.circular(4)),
-            child: const Icon(Icons.lock, color: Colors.white, size: 9),
-          ),
-      ],
+    final c = region.isBlurred ? region.color : region.color.withOpacity(0.35);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+      decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(4)),
+      child: Text('${region.label} ${_el(region.effect)}',
+          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
     );
   }
 }
 
-// ═══ 선택 핸들 ═══════════════════════════════════════════════════════
 class _SelectionHandles extends StatelessWidget {
   final BlurRegion region;
   final Rect dispRect;
@@ -419,19 +446,14 @@ class _SelectionHandles extends StatelessWidget {
   final void Function(Offset) Function(BlurRegion, _RH) resizeCb;
   final RenderBox? Function() overlayRenderBox;
   final void Function(double) onRotate;
-  final VoidCallback onToggleLock;
   final VoidCallback? onDelete;
+  final VoidCallback? onCommit;
 
   const _SelectionHandles({
-    super.key,
-    required this.region,
-    required this.dispRect,
-    required this.imageSize,
-    required this.resizeCb,
-    required this.overlayRenderBox,
-    required this.onRotate,
-    required this.onToggleLock,
-    this.onDelete,
+    super.key, required this.region, required this.dispRect,
+    required this.imageSize, required this.resizeCb,
+    required this.overlayRenderBox, required this.onRotate,
+    this.onDelete, this.onCommit,
   });
 
   Offset _hp(_RH h) =>
@@ -447,47 +469,32 @@ class _SelectionHandles extends StatelessWidget {
     return Stack(
       clipBehavior: Clip.none,
       children: [
+        // 💡 중요: IgnorePointer가 터치 먹통(충돌)을 막아줍니다!
         Positioned.fill(
-          child: CustomPaint(
-            painter: _DashLinePainter(
-              from: _rotPt(Offset(dispRect.center.dx, dispRect.top), dispRect.center, region.angle),
-              to: rotPos,
-              color: color,
-            ),
+          child: IgnorePointer(
+            child: CustomPaint(painter: _DashLinePainter(
+              from: _rotPt(Offset(dispRect.center.dx, dispRect.top),
+                  dispRect.center, region.angle),
+              to: rotPos, color: color,
+            )),
           ),
         ),
         for (final h in _RH.values)
           _ResizeHandle(
             key: ValueKey('rh_${region.id}_${h.name}'),
-            position: _hp(h),
-            color: color,
-            onDelta: resizeCb(region, h),
+            position: _hp(h), color: color,
+            onDelta: resizeCb(region, h), onCommit: onCommit,
           ),
         _RotationHandle(
           key: ValueKey('rot_${region.id}'),
-          position: rotPos,
-          boxCenter: dispRect.center,
-          currentAngle: region.angle,
-          color: color,
+          position: rotPos, boxCenter: dispRect.center,
+          currentAngle: region.angle, color: color,
           overlayRenderBox: overlayRenderBox,
-          onAngleChanged: onRotate,
-        ),
-        Positioned(
-          left: trPos.dx + 8,
-          top: trPos.dy - 22,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: onToggleLock,
-            child: _ActionDot(
-              icon: region.isLocked ? Icons.lock : Icons.lock_open,
-              color: region.isLocked ? Colors.amber.shade700 : Colors.grey.shade600,
-            ),
-          ),
+          onAngleChanged: onRotate, onCommit: onCommit,
         ),
         if (onDelete != null)
           Positioned(
-            left: trPos.dx + 46,
-            top: trPos.dy - 22,
+            left: trPos.dx + 6, top: trPos.dy - 24,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: onDelete,
@@ -499,15 +506,15 @@ class _SelectionHandles extends StatelessWidget {
   }
 }
 
-// ─── [Req 5] 리사이즈 핸들 — 터치 영역 대폭 확장 ────────────────────
 class _ResizeHandle extends StatefulWidget {
   final Offset position;
   final Color color;
   final void Function(Offset) onDelta;
+  final VoidCallback? onCommit;
 
   const _ResizeHandle({
     super.key, required this.position,
-    required this.color, required this.onDelta,
+    required this.color, required this.onDelta, this.onCommit,
   });
 
   @override
@@ -519,9 +526,8 @@ class _ResizeHandleState extends State<_ResizeHandle> {
 
   @override
   Widget build(BuildContext context) {
-    // [Req 5] 시각적 반경 20px + 투명 패딩 10px = 터치 유효 직경 60px
-    const vr = 20.0;   // visual radius
-    const pad = 10.0;  // invisible hitbox padding
+    const vr = 5.0;
+    const pad = 22.0;
     const total = vr + pad;
 
     return Positioned(
@@ -529,26 +535,27 @@ class _ResizeHandleState extends State<_ResizeHandle> {
       top: widget.position.dy - total,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onPanStart: (d) => _last = d.globalPosition,
+        onPanStart: (d) {
+          HapticFeedback.selectionClick();
+          _last = d.globalPosition;
+        },
         onPanUpdate: (d) {
           if (_last == null) return;
           widget.onDelta(d.globalPosition - _last!);
           _last = d.globalPosition;
         },
-        onPanEnd: (_) => _last = null,
+        onPanEnd: (_) { _last = null; widget.onCommit?.call(); },
         child: SizedBox(
-          width: total * 2,
-          height: total * 2,
+          width: total * 2, height: total * 2,
           child: Center(
             child: Container(
-              width: vr * 2,
-              height: vr * 2,
+              width: vr * 2, height: vr * 2,
               decoration: BoxDecoration(
                 color: Colors.white,
                 shape: BoxShape.circle,
-                border: Border.all(color: widget.color, width: 2.5),
+                border: Border.all(color: widget.color, width: 1.5),
                 boxShadow: const [
-                  BoxShadow(color: Colors.black38, blurRadius: 6, offset: Offset(0, 2))
+                  BoxShadow(color: Colors.black54, blurRadius: 4, offset: Offset(0, 1))
                 ],
               ),
             ),
@@ -559,19 +566,18 @@ class _ResizeHandleState extends State<_ResizeHandle> {
   }
 }
 
-// ─── 회전 핸들 ────────────────────────────────────────────────────────
 class _RotationHandle extends StatefulWidget {
-  final Offset position;
-  final Offset boxCenter;
+  final Offset position, boxCenter;
   final double currentAngle;
   final Color color;
   final RenderBox? Function() overlayRenderBox;
   final void Function(double) onAngleChanged;
+  final VoidCallback? onCommit;
 
   const _RotationHandle({
     super.key, required this.position, required this.boxCenter,
     required this.currentAngle, required this.color,
-    required this.overlayRenderBox, required this.onAngleChanged,
+    required this.overlayRenderBox, required this.onAngleChanged, this.onCommit,
   });
 
   @override
@@ -583,8 +589,8 @@ class _RotationHandleState extends State<_RotationHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const vr = 20.0;
-    const pad = 10.0;
+    const vr = 8.0;
+    const pad = 16.0;
     const total = vr + pad;
 
     return Positioned(
@@ -593,23 +599,20 @@ class _RotationHandleState extends State<_RotationHandle> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanStart: (d) {
-          final ro = widget.overlayRenderBox();
-          if (ro == null) return;
+          HapticFeedback.selectionClick();
+          final ro = widget.overlayRenderBox(); if (ro == null) return;
           final lp = ro.globalToLocal(d.globalPosition);
-          _startTouch = math.atan2(
-              lp.dy - widget.boxCenter.dy, lp.dx - widget.boxCenter.dx);
+          _startTouch = math.atan2(lp.dy - widget.boxCenter.dy, lp.dx - widget.boxCenter.dx);
           _startBox = widget.currentAngle;
         },
         onPanUpdate: (d) {
           if (_startTouch == null || _startBox == null) return;
-          final ro = widget.overlayRenderBox();
-          if (ro == null) return;
+          final ro = widget.overlayRenderBox(); if (ro == null) return;
           final lp = ro.globalToLocal(d.globalPosition);
-          final cur = math.atan2(
-              lp.dy - widget.boxCenter.dy, lp.dx - widget.boxCenter.dx);
+          final cur = math.atan2(lp.dy - widget.boxCenter.dy, lp.dx - widget.boxCenter.dx);
           widget.onAngleChanged(_startBox! + (cur - _startTouch!));
         },
-        onPanEnd: (_) { _startTouch = null; _startBox = null; },
+        onPanEnd: (_) { _startTouch = null; _startBox = null; widget.onCommit?.call(); },
         child: SizedBox(
           width: total * 2, height: total * 2,
           child: Center(
@@ -617,9 +620,9 @@ class _RotationHandleState extends State<_RotationHandle> {
               width: vr * 2, height: vr * 2,
               decoration: BoxDecoration(
                 color: widget.color, shape: BoxShape.circle,
-                boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 6)],
+                boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 5)],
               ),
-              child: const Icon(Icons.rotate_right, color: Colors.white, size: 16),
+              child: const Icon(Icons.rotate_right, color: Colors.white, size: 11),
             ),
           ),
         ),
@@ -632,13 +635,9 @@ class _DashLinePainter extends CustomPainter {
   final Offset from, to;
   final Color color;
   const _DashLinePainter({required this.from, required this.to, required this.color});
-
   @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawLine(from, to,
-        Paint()..color = color.withOpacity(0.6)..strokeWidth = 1.5);
-  }
-
+  void paint(Canvas canvas, Size size) => canvas.drawLine(from, to,
+      Paint()..color = color.withOpacity(0.6)..strokeWidth = 1.5);
   @override bool shouldRepaint(_DashLinePainter o) => from != o.from || to != o.to;
 }
 
@@ -646,14 +645,11 @@ class _ActionDot extends StatelessWidget {
   final IconData icon;
   final Color color;
   const _ActionDot({required this.icon, required this.color});
-
   @override
   Widget build(BuildContext context) => Container(
-    width: 30, height: 30,
-    decoration: BoxDecoration(
-      color: color, shape: BoxShape.circle,
-      boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 4)],
-    ),
-    child: Icon(icon, color: Colors.white, size: 15),
+    width: 28, height: 28,
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle,
+        boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 4)]),
+    child: Icon(icon, color: Colors.white, size: 14),
   );
 }

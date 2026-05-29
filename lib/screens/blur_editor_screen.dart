@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/blur_region.dart';
 import '../models/detection_result.dart';
@@ -34,95 +36,209 @@ class BlurEditorScreen extends StatefulWidget {
 }
 
 class _BlurEditorScreenState extends State<BlurEditorScreen> {
+  // ── 영역 상태 ──────────────────────────────────────────────────────
   late List<BlurRegion> _regions;
   int _regionCounter = 0;
 
-  // [Req 2] 명확한 모드 분리: false=이동/확대, true=그리기
-  bool _drawMode = false;
-  bool _isExporting = false;
+  // ── 선택 상태 (에디터 + 오버레이 동기화) ─────────────────────────
   String? _selectedId;
 
+  // ── UI 상태 ────────────────────────────────────────────────────────
+  bool _drawMode = false;
+  bool _isExporting = false;
+
+  // ── Undo / Redo ────────────────────────────────────────────
+  final List<List<BlurRegion>> _history = [];
+  int _historyIndex = -1;
+  bool get _canUndo => _historyIndex > 0;
+  bool get _canRedo => _historyIndex < _history.length - 1;
+  bool get _hasEdits => _historyIndex > 0;
+
+  // ── InteractiveViewer ─────────────────────────────────────────────
   final _tc = TransformationController();
-  bool _isZoomed = false;
+
+  // ── 줌 인디케이터 ─────────────────────────────────────────────────
+  double _zoomLevel = 1.0;
+  bool _showZoomBadge = false;
+  Timer? _zoomTimer;
 
   @override
   void initState() {
     super.initState();
     _buildInitialRegions();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _pushHistory());
+
     _tc.addListener(() {
-      final zoomed = _tc.value.getMaxScaleOnAxis() > 1.01;
-      if (zoomed != _isZoomed) setState(() => _isZoomed = zoomed);
+      final scale = _tc.value.getMaxScaleOnAxis();
+      if ((scale - _zoomLevel).abs() > 0.08) {
+        setState(() { _zoomLevel = scale; _showZoomBadge = true; });
+        _zoomTimer?.cancel();
+        _zoomTimer = Timer(const Duration(milliseconds: 1500), () {
+          if (mounted) setState(() => _showZoomBadge = false);
+        });
+      }
     });
   }
 
   @override
   void dispose() {
+    _zoomTimer?.cancel();
     _tc.dispose();
     super.dispose();
   }
 
+  // ── 초기 영역 구성 ─────────────────────────────────────────────────
   void _buildInitialRegions() {
-    final regions = <BlurRegion>[];
+    final list = <BlurRegion>[];
     for (int i = 0; i < widget.detections.length; i++) {
       final d = widget.detections[i];
-      regions.add(BlurRegion.fromDetection(d, id: 'auto_$i')
+      list.add(BlurRegion.fromDetection(d, id: 'auto_$i')
           .copyWith(isBlurred: widget.typeBlurEnabled[d.type] ?? true));
     }
     for (int i = 0; i < widget.ocrDetections.length; i++) {
-      regions.add(BlurRegion.fromDetection(
+      list.add(BlurRegion.fromDetection(
         widget.ocrDetections[i],
         id: 'ocr_$i',
-        defaultEffect: BlurEffect.blackBar,
+        defaultEffect: BlurEffect.gaussian, // 기본값 gaussian으로 통일
       ).copyWith(
-          isBlurred:
-          widget.typeBlurEnabled[DetectionType.document] ?? true));
+          isBlurred: widget.typeBlurEnabled[DetectionType.document] ?? true));
     }
-    _regions = regions;
-    _regionCounter = regions.length;
+    _regions = list;
+    _regionCounter = list.length;
   }
 
+  // ── Undo / Redo ────────────────────────────────────────────────────
+  void _pushHistory() {
+    if (_historyIndex < _history.length - 1) {
+      _history.removeRange(_historyIndex + 1, _history.length);
+    }
+    _history.add(List<BlurRegion>.from(_regions));
+    _historyIndex = _history.length - 1;
+    if (_history.length > 30) {
+      _history.removeAt(0);
+      _historyIndex = _history.length - 1;
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _undo() {
+    if (!_canUndo) return;
+    HapticFeedback.lightImpact();
+    setState(() {
+      _historyIndex--;
+      _regions = List<BlurRegion>.from(_history[_historyIndex]);
+      _selectedId = null;
+    });
+  }
+
+  void _redo() {
+    if (!_canRedo) return;
+    HapticFeedback.lightImpact();
+    setState(() {
+      _historyIndex++;
+      _regions = List<BlurRegion>.from(_history[_historyIndex]);
+      _selectedId = null;
+    });
+  }
+
+  // ── 뒤로가기 안전장치 ──────────────────────────────────────────────
+  Future<void> _handleBackPress() async {
+    if (!_hasEdits) { if (mounted) Navigator.of(context).pop(); return; }
+    HapticFeedback.mediumImpact();
+    final leave = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.7),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(children: [
+          Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 22),
+          SizedBox(width: 8),
+          Text('편집 내용이 있어요', style: TextStyle(color: Colors.white, fontSize: 16)),
+        ]),
+        content: const Text('지금까지 편집한 블러 설정이 사라져요.\n정말 나가시겠어요?',
+            style: TextStyle(color: Color(0xFF888888), fontSize: 14, height: 1.5)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('계속 편집', style: TextStyle(color: Color(0xFF6C63FF))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('나가기', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && mounted) Navigator.of(context).pop();
+  }
+
+  // ── 콜백 ─────────────────────────────────────────────────────────
   BlurRegion? get _selectedRegion {
     if (_selectedId == null) return null;
-    try {
-      return _regions.firstWhere((r) => r.id == _selectedId);
-    } catch (_) {
-      return null;
-    }
+    try { return _regions.firstWhere((r) => r.id == _selectedId); }
+    catch (_) { return null; }
   }
 
   void _onRegionUpdated(BlurRegion updated) {
     setState(() {
       final idx = _regions.indexWhere((r) => r.id == updated.id);
       if (idx != -1) _regions[idx] = updated;
-      _selectedId = updated.id;
     });
   }
 
+  void _onEditCommit() => _pushHistory();
+
+  // 선택 상태 동기화 (오버레이 → 에디터)
+  void _onSelectionChanged(String? id) {
+    if (_selectedId != id) setState(() => _selectedId = id);
+  }
+
   void _onRegionAdded(Rect imageRect) {
+    HapticFeedback.mediumImpact();
     final id = 'manual_${++_regionCounter}';
     setState(() {
       _regions.add(BlurRegion.manual(id: id, rect: imageRect));
       _selectedId = id;
-      _drawMode = false; // 박스 생성 후 이동 모드로 자동 전환
+      _drawMode = false;
     });
+    _pushHistory();
   }
 
   void _onRegionDeleted(String id) {
+    final deleted = _regions.firstWhere((r) => r.id == id,
+        orElse: () => BlurRegion.manual(id: id, rect: Rect.zero));
+    HapticFeedback.mediumImpact();
     setState(() {
       _regions.removeWhere((r) => r.id == id);
       if (_selectedId == id) _selectedId = null;
     });
+    _pushHistory();
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('${deleted.label} 블러 박스 삭제됨'),
+      backgroundColor: const Color(0xFF2D2D2D),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      duration: const Duration(seconds: 3),
+      action: SnackBarAction(
+          label: '되돌리기', textColor: const Color(0xFF6C63FF), onPressed: _undo),
+    ));
   }
 
+  // ── Export ───────────────────────────────────────────────────────
   Future<void> _goToExport() async {
     setState(() => _isExporting = true);
-    final active = _regions.where((r) => r.isBlurred).toList();
     try {
       final blurred = await widget.blurService.applyBlur(
-        widget.imageFile, active,
-        widget.imageSize.width, widget.imageSize.height,
+        widget.imageFile,
+        _regions.where((r) => r.isBlurred).toList(),
+        widget.imageSize.width,
+        widget.imageSize.height,
       );
       if (!mounted) return;
+      HapticFeedback.heavyImpact();
       Navigator.push(context, MaterialPageRoute(
         builder: (_) => ExportScreen(
             blurredImage: blurred, originalBytes: widget.originalBytes),
@@ -132,164 +248,217 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     }
   }
 
-  // [Req 4] 8종 효과 기본 강도
+  // ── [요구사항 2, 5 반영] 효과 4종 통폐합 및 슬라이더 정규화 ─────────────────
   void _changeEffect(BlurEffect effect) {
     if (_selectedRegion == null) return;
+    HapticFeedback.selectionClick();
+
+    // 각 효과별 최적의 기본 강도값
     final intensity = switch (effect) {
-      BlurEffect.gaussian      => 12.0,
-      BlurEffect.mosaic        => 20.0,
-      BlurEffect.blackBar      => 20.0,
-      BlurEffect.frostedGlass  => 10.0,
-      BlurEffect.whiteBar      => 20.0,
-      BlurEffect.redBar        => 20.0,
-      BlurEffect.heavyPixelate => 40.0,
-      BlurEffect.grayscaleBlur => 15.0,
+      BlurEffect.gaussian     => 15.0,
+      BlurEffect.frostedGlass => 15.0,
+      BlurEffect.pixelate     => 20.0,
+      BlurEffect.fog          => 20.0,
     };
-    _onRegionUpdated(
-        _selectedRegion!.copyWith(effect: effect, blurIntensity: intensity));
+
+    _onRegionUpdated(_selectedRegion!.copyWith(effect: effect, blurIntensity: intensity));
+    _pushHistory();
   }
 
-  bool get _showSlider {
-    final e = _selectedRegion?.effect;
-    return e == BlurEffect.gaussian ||
-        e == BlurEffect.mosaic ||
-        e == BlurEffect.frostedGlass ||
-        e == BlurEffect.heavyPixelate ||
-        e == BlurEffect.grayscaleBlur;
+  bool get _showSlider => _selectedRegion != null;
+
+  String get _sliderLabel {
+    return switch (_selectedRegion?.effect) {
+      BlurEffect.gaussian     => '흐림 강도',
+      BlurEffect.frostedGlass => '유리 강도',
+      BlurEffect.pixelate     => '픽셀 크기',
+      BlurEffect.fog          => '안개 두께',
+      null                    => '',
+    };
   }
 
-  String get _sliderLabel => switch (_selectedRegion?.effect) {
-    BlurEffect.gaussian      => '흐림 강도',
-    BlurEffect.mosaic        => '픽셀 크기',
-    BlurEffect.frostedGlass  => '흐림 강도',
-    BlurEffect.heavyPixelate => '픽셀 크기',
-    BlurEffect.grayscaleBlur => '흐림 강도',
-    _                        => '',
-  };
+  double get _sliderMax {
+    return switch (_selectedRegion?.effect) {
+      BlurEffect.pixelate => 80.0,
+      BlurEffect.fog      => 50.0,
+      _                   => 30.0,
+    };
+  }
 
-  double get _sliderMax => switch (_selectedRegion?.effect) {
-    BlurEffect.mosaic        => 80.0,
-    BlurEffect.heavyPixelate => 80.0,
-    _                        => 30.0,
-  };
+  int get _activeCount => _regions.where((r) => r.isBlurred).length;
 
+  // ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
-      appBar: _buildAppBar(),
-      body: LayoutBuilder(builder: (ctx, constraints) {
-        // [Req 3] 이미지 영역 최대 47%, 나머지 하단 패널
-        final imageH = constraints.maxHeight * 0.47;
-        return Column(
+    return PopScope(
+      canPop: !_hasEdits,
+      onPopInvoked: (didPop) { if (!didPop) _handleBackPress(); },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F0F0F),
+        appBar: _buildAppBar(),
+        body: Column(
           children: [
-            SizedBox(height: imageH, child: _buildImageArea()),
-            Expanded(
-              child: SingleChildScrollView(child: _buildBottomPanel()),
-            ),
+            Expanded(child: _buildImageArea()),
+            _buildUndoRedoBar(),
+            _buildBottomPanel(),
           ],
-        );
-      }),
+        ),
+      ),
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────
   AppBar _buildAppBar() => AppBar(
     backgroundColor: const Color(0xFF0F0F0F),
     foregroundColor: Colors.white,
-    title: Row(
-      children: [
-        Text(
-          _drawMode ? '✏️ 그리기 모드' : '편집',
-          style: const TextStyle(
-              fontWeight: FontWeight.bold, fontSize: 16),
+    leading: IconButton(
+      icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+      onPressed: _handleBackPress,
+    ),
+    title: Row(children: [
+      Text(_drawMode ? '✏️ 그리기' : '편집',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+      if (_activeCount > 0) ...[
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          decoration: BoxDecoration(
+            color: const Color(0xFF6C63FF).withOpacity(0.2),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.4)),
+          ),
+          child: Text('$_activeCount',
+              style: const TextStyle(color: Color(0xFF6C63FF), fontSize: 11, fontWeight: FontWeight.bold)),
         ),
       ],
-    ),
+    ]),
     elevation: 0,
     actions: [
       IconButton(
-        icon: const Icon(Icons.visibility_outlined),
-        tooltip: '전체 블러 표시/숨김',
+        icon: const Icon(Icons.visibility_outlined, size: 22),
         onPressed: () {
+          HapticFeedback.lightImpact();
           final allOn = _regions.every((r) => r.isBlurred);
-          setState(() {
-            _regions = _regions
-                .map((r) => r.copyWith(isBlurred: !allOn))
-                .toList();
-          });
+          setState(() => _regions = _regions.map((r) => r.copyWith(isBlurred: !allOn)).toList());
+          _pushHistory();
         },
       ),
     ],
   );
 
   Widget _buildImageArea() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: LayoutBuilder(builder: (ctx, constraints) {
-          if (widget.imageSize == Size.zero) return const SizedBox.shrink();
-          final dw = constraints.maxWidth;
-          final dh =
-              widget.imageSize.height * dw / widget.imageSize.width;
-          final displaySize = Size(dw, dh);
+    return LayoutBuilder(builder: (ctx, constraints) {
+      if (widget.imageSize == Size.zero) return const SizedBox.shrink();
+      final availW = constraints.maxWidth;
+      final availH = constraints.maxHeight;
+      final imgAspect = widget.imageSize.width / widget.imageSize.height;
+      final availAspect = availW / availH;
 
-          return SingleChildScrollView(
-            physics: _isZoomed
-                ? const NeverScrollableScrollPhysics()
-                : const ClampingScrollPhysics(),
-            child: InteractiveViewer(
-              transformationController: _tc,
-              // [Req 2] 이동 모드에서만 pan/scale 활성
-              panEnabled: !_drawMode,
-              scaleEnabled: !_drawMode,
-              minScale: 1.0,
-              maxScale: 6.0,
-              clipBehavior: Clip.hardEdge,
-              child: SizedBox(
-                width: dw,
-                height: dh,
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: Image.memory(widget.originalBytes,
-                          fit: BoxFit.fill),
-                    ),
-                    BlurRegionOverlay(
-                      regions: _regions,
-                      imageSize: widget.imageSize,
-                      displaySize: displaySize,
-                      drawMode: _drawMode,
-                      transformationController: _tc,
-                      onRegionUpdated: _onRegionUpdated,
-                      onRegionAdded: _onRegionAdded,
-                      onRegionDeleted: _onRegionDeleted,
-                    ),
-                    if (_isExporting)
-                      Positioned.fill(
-                        child: Container(
-                          color: Colors.black.withOpacity(0.55),
-                          child: const Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                CircularProgressIndicator(
-                                    color: Color(0xFF6C63FF)),
-                                SizedBox(height: 12),
-                                Text('이미지 처리 중...',
-                                    style: TextStyle(
-                                        color: Colors.white70)),
-                              ],
+      final double dw, dh;
+      if (imgAspect >= availAspect) {
+        dw = availW;
+        dh = availW / imgAspect;
+      } else {
+        dh = availH;
+        dw = availH * imgAspect;
+      }
+      final displaySize = Size(dw, dh);
+
+      return Container(
+        color: Colors.black,
+        child: Center(
+          child: Stack(
+            children: [
+              ClipRect(
+                child: InteractiveViewer(
+                  transformationController: _tc,
+                  panEnabled: !_drawMode,
+                  scaleEnabled: !_drawMode,
+                  minScale: 1.0,
+                  maxScale: 6.0,
+                  clipBehavior: Clip.hardEdge,
+                  child: SizedBox(
+                    width: dw, height: dh,
+                    child: Stack(
+                      children: [
+                        Image.memory(widget.originalBytes,
+                            fit: BoxFit.fill, width: dw, height: dh),
+                        BlurRegionOverlay(
+                          regions: _regions,
+                          imageSize: widget.imageSize,
+                          displaySize: displaySize,
+                          drawMode: _drawMode,
+                          transformationController: _tc,
+                          selectedId: _selectedId,
+                          onRegionUpdated: _onRegionUpdated,
+                          onRegionAdded: _onRegionAdded,
+                          onRegionDeleted: _onRegionDeleted,
+                          onEditCommit: _onEditCommit,
+                          onSelectionChanged: _onSelectionChanged,
+                        ),
+                        if (_isExporting)
+                          Positioned.fill(
+                            child: Container(
+                              color: Colors.black.withOpacity(0.55),
+                              child: const Center(child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  CircularProgressIndicator(color: Color(0xFF6C63FF)),
+                                  SizedBox(height: 12),
+                                  Text('이미지 처리 중...', style: TextStyle(color: Colors.white70)),
+                                ],
+                              )),
                             ),
                           ),
-                        ),
-                      ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
               ),
-            ),
-          );
-        }),
+              if (_showZoomBadge)
+                Positioned(
+                  top: 8, right: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.65),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text('${_zoomLevel.toStringAsFixed(1)}×',
+                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+
+  Widget _buildUndoRedoBar() {
+    return Container(
+      height: 38,
+      color: const Color(0xFF141414),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          const Text('편집 기록',
+              style: TextStyle(color: Color(0xFF555555), fontSize: 11)),
+          const Spacer(),
+          _UndoRedoBtn(
+            icon: Icons.undo_rounded,
+            enabled: _canUndo,
+            onTap: _undo,
+            tooltip: '실행 취소',
+          ),
+          const SizedBox(width: 4),
+          _UndoRedoBtn(
+            icon: Icons.redo_rounded,
+            enabled: _canRedo,
+            onTap: _redo,
+            tooltip: '다시 실행',
+          ),
+        ],
       ),
     );
   }
@@ -307,109 +476,129 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-
-            // ── [Req 2] 모드 토글 (명확한 분리) ──────────────────────
+            Container(
+              width: 36, height: 4,
+              margin: const EdgeInsets.only(top: 8, bottom: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFF444444),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
               child: Container(
                 padding: const EdgeInsets.all(3),
                 decoration: BoxDecoration(
                   color: const Color(0xFF0F0F0F),
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
                   children: [
-                    _buildModeBtn(
-                      icon: Icons.pan_tool_outlined,
-                      label: '🔍 이동/확대',
-                      active: !_drawMode,
-                      onTap: () => setState(() => _drawMode = false),
-                      activeColor: const Color(0xFF6C63FF),
-                    ),
-                    _buildModeBtn(
-                      icon: Icons.edit_outlined,
-                      label: '✏️ 그리기',
-                      active: _drawMode,
-                      onTap: () => setState(() => _drawMode = true),
-                      activeColor: const Color(0xFF00BCD4),
-                    ),
+                    _buildModeBtn(Icons.pan_tool_outlined, '이동/확대',
+                        !_drawMode, const Color(0xFF6C63FF), () {
+                          HapticFeedback.selectionClick();
+                          setState(() => _drawMode = false);
+                        }),
+                    _buildModeBtn(Icons.edit_outlined, '박스 그리기',
+                        _drawMode, const Color(0xFF00BCD4), () {
+                          HapticFeedback.selectionClick();
+                          setState(() => _drawMode = true);
+                        }),
                   ],
                 ),
               ),
             ),
-
-            // ── 선택된 박스 효과 패널 ──────────────────────────────
             if (sel != null) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                 child: Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: sel.color.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                            color: sel.color.withOpacity(0.5)),
+                        color: sel.color.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: sel.color.withOpacity(0.4)),
                       ),
-                      child: Text('${sel.label} 선택됨',
-                          style: TextStyle(
-                              color: sel.color,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Container(width: 7, height: 7,
+                            decoration: BoxDecoration(color: sel.color, shape: BoxShape.circle)),
+                        const SizedBox(width: 4),
+                        Text('${sel.label} 선택됨',
+                            style: TextStyle(color: sel.color, fontSize: 11, fontWeight: FontWeight.bold)),
+                      ]),
                     ),
                     const Spacer(),
-                    if (sel.isLocked)
-                      const Text('🔒 잠금 상태',
-                          style: TextStyle(
-                              color: Color(0xFF888888), fontSize: 10)),
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        _onRegionUpdated(sel.copyWith(isBlurred: !sel.isBlurred));
+                        _pushHistory();
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: sel.isBlurred
+                              ? const Color(0xFF6C63FF)
+                              : const Color(0xFF3D3D3D),
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: sel.isBlurred
+                              ? [BoxShadow(color: const Color(0xFF6C63FF).withOpacity(0.4),
+                              blurRadius: 8, offset: const Offset(0, 2))]
+                              : null,
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(
+                            sel.isBlurred ? Icons.visibility : Icons.visibility_off,
+                            color: Colors.white, size: 15,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            sel.isBlurred ? 'ON' : 'OFF',
+                            style: const TextStyle(color: Colors.white,
+                                fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ]),
+                      ),
+                    ),
                   ],
                 ),
               ),
 
-              // [Req 4] 8종 효과 버튼 — 가로 스크롤
+              // [요구사항 2] 4가지 핵심 효과로 칩 UI 통폐합
               SizedBox(
-                height: 72,
+                height: 76,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                   children: [
-                    _EffectChip(label: '흐림',    effect: BlurEffect.gaussian,      icon: Icons.blur_on,           accentColor: const Color(0xFF6C63FF), selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '기본 흐림',   effect: BlurEffect.gaussian,     icon: Icons.blur_on,    accentColor: const Color(0xFF6C63FF), selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '모자이크', effect: BlurEffect.mosaic,         icon: Icons.grid_4x4,          accentColor: const Color(0xFFFF6B6B), selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '유리 질감',   effect: BlurEffect.frostedGlass, icon: Icons.water_drop, accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '검정',    effect: BlurEffect.blackBar,       icon: Icons.rectangle_outlined, accentColor: Colors.grey,             selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '픽셀 모자이크', effect: BlurEffect.pixelate,     icon: Icons.apps,       accentColor: Colors.orange,           selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '반투명',   effect: BlurEffect.frostedGlass,  icon: Icons.opacity,           accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
-                    const SizedBox(width: 6),
-                    _EffectChip(label: '흰색',    effect: BlurEffect.whiteBar,       icon: Icons.crop_square,       accentColor: Colors.white70,          selected: sel.effect, onTap: _changeEffect),
-                    const SizedBox(width: 6),
-                    _EffectChip(label: '빨간색',  effect: BlurEffect.redBar,         icon: Icons.remove,            accentColor: Colors.redAccent,        selected: sel.effect, onTap: _changeEffect),
-                    const SizedBox(width: 6),
-                    _EffectChip(label: '굵은픽셀', effect: BlurEffect.heavyPixelate, icon: Icons.apps,              accentColor: Colors.orange,           selected: sel.effect, onTap: _changeEffect),
-                    const SizedBox(width: 6),
-                    _EffectChip(label: '흑백',    effect: BlurEffect.grayscaleBlur,  icon: Icons.filter_b_and_w,    accentColor: Colors.blueGrey,         selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '뿌연 안개',   effect: BlurEffect.fog,          icon: Icons.cloud,      accentColor: Colors.teal,             selected: sel.effect, onTap: _changeEffect),
                   ],
                 ),
               ),
 
               if (_showSlider)
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
                   child: Row(
                     children: [
                       Text('$_sliderLabel: ${sel.blurIntensity.toInt()}',
-                          style: const TextStyle(
-                              color: Color(0xFF888888), fontSize: 12)),
+                          style: const TextStyle(color: Color(0xFF888888), fontSize: 12)),
                       Expanded(
                         child: Slider(
                           value: sel.blurIntensity,
-                          min: 1.0,
-                          max: _sliderMax,
+                          min: 1.0, max: _sliderMax,
                           activeColor: const Color(0xFF6C63FF),
-                          onChanged: (v) => _onRegionUpdated(
-                              sel.copyWith(blurIntensity: v)),
+                          inactiveColor: const Color(0xFF2D2D2D),
+                          onChanged: (v) => _onRegionUpdated(sel.copyWith(blurIntensity: v)),
+                          onChangeEnd: (_) => _pushHistory(),
                         ),
                       ),
                     ],
@@ -417,19 +606,17 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                 ),
             ] else ...[
               Padding(
-                padding: const EdgeInsets.fromLTRB(0, 10, 0, 4),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
                 child: Text(
                   _drawMode
-                      ? '👆 드래그로 새 블러 박스 추가'
-                      : '박스 탭 → ON/OFF  |  핸들 드래그 → 크기·회전',
-                  style: const TextStyle(
-                      color: Color(0xFF555555), fontSize: 11),
+                      ? '👆 드래그해서 새 블러 박스를 그려주세요'
+                      : '블러 박스를 탭하면 선택하고 편집할 수 있어요',
+                  style: const TextStyle(color: Color(0xFF555555), fontSize: 12),
                   textAlign: TextAlign.center,
                 ),
               ),
             ],
 
-            // ── 완료 버튼 ─────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
               child: SizedBox(
@@ -439,20 +626,27 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6C63FF),
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 0,
                   ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text('완료 · 내보내기',
-                          style: TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.bold)),
-                      SizedBox(width: 8),
-                      Icon(Icons.arrow_forward_rounded, size: 20),
-                    ],
-                  ),
+                  child: _isExporting
+                      ? const SizedBox(width: 20, height: 20,
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    const Text('저장하기',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text('$_activeCount개 블러',
+                          style: const TextStyle(fontSize: 11)),
+                    ),
+                  ]),
                 ),
               ),
             ),
@@ -462,45 +656,67 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     );
   }
 
-  Widget _buildModeBtn({
-    required IconData icon,
-    required String label,
-    required bool active,
-    required VoidCallback onTap,
-    required Color activeColor,
-  }) {
+  Widget _buildModeBtn(IconData icon, String label, bool active,
+      Color activeColor, VoidCallback onTap) {
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(vertical: 9),
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
             color: active ? activeColor : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(9),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 14,
-                  color: active ? Colors.white : const Color(0xFF666666)),
-              const SizedBox(width: 5),
-              Text(label,
-                  style: TextStyle(
-                    color: active ? Colors.white : const Color(0xFF666666),
-                    fontSize: 12,
-                    fontWeight:
-                    active ? FontWeight.bold : FontWeight.normal,
-                  )),
-            ],
-          ),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon, size: 14,
+                color: active ? Colors.white : const Color(0xFF666666)),
+            const SizedBox(width: 5),
+            Text(label, style: TextStyle(
+              color: active ? Colors.white : const Color(0xFF666666),
+              fontSize: 12,
+              fontWeight: active ? FontWeight.bold : FontWeight.normal,
+            )),
+          ]),
         ),
       ),
     );
   }
 }
 
-// ─── [Req 4] 8종 효과 선택 칩 ────────────────────────────────────────
+class _UndoRedoBtn extends StatelessWidget {
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+  final String tooltip;
+
+  const _UndoRedoBtn({
+    required this.icon,
+    required this.enabled,
+    required this.onTap,
+    required this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip,
+    child: GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        width: 36, height: 28,
+        decoration: BoxDecoration(
+          color: enabled
+              ? const Color(0xFF2D2D2D)
+              : const Color(0xFF1A1A1A),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Icon(icon, size: 18,
+            color: enabled ? Colors.white : const Color(0xFF444444)),
+      ),
+    ),
+  );
+}
+
 class _EffectChip extends StatelessWidget {
   final String label;
   final BlurEffect effect;
@@ -510,12 +726,8 @@ class _EffectChip extends StatelessWidget {
   final void Function(BlurEffect) onTap;
 
   const _EffectChip({
-    required this.label,
-    required this.effect,
-    required this.icon,
-    required this.accentColor,
-    required this.selected,
-    required this.onTap,
+    required this.label, required this.effect, required this.icon,
+    required this.accentColor, required this.selected, required this.onTap,
   });
 
   @override
@@ -524,33 +736,34 @@ class _EffectChip extends StatelessWidget {
     return GestureDetector(
       onTap: () => onTap(effect),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        width: 72,
+        duration: const Duration(milliseconds: 200),
+        width: 74,
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
         decoration: BoxDecoration(
-          color: isActive ? accentColor : const Color(0xFF2D2D2D),
-          borderRadius: BorderRadius.circular(10),
-          border: isActive
-              ? null
-              : Border.all(color: const Color(0xFF3D3D3D)),
+          color: isActive ? accentColor : const Color(0xFF252525),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isActive ? accentColor : const Color(0xFF363636),
+            width: isActive ? 0 : 1,
+          ),
+          boxShadow: isActive
+              ? [BoxShadow(color: accentColor.withOpacity(0.5),
+              blurRadius: 12, offset: const Offset(0, 3))]
+              : null,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18,
-                color: isActive ? Colors.white : const Color(0xFF888888)),
-            const SizedBox(height: 4),
-            Text(label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color:
-                  isActive ? Colors.white : const Color(0xFF888888),
-                  fontSize: 10,
-                  fontWeight:
-                  isActive ? FontWeight.bold : FontWeight.normal,
-                )),
-          ],
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 19,
+                  color: isActive ? Colors.white : const Color(0xFF888888)),
+              const SizedBox(height: 5),
+              Text(label, textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: isActive ? Colors.white : const Color(0xFF888888),
+                    fontSize: 10,
+                    fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                  )),
+            ]),
       ),
     );
   }

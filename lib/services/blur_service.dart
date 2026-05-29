@@ -29,6 +29,7 @@ class BlurService {
           ? _applyRectBlur(src, region)
           : _applyRotatedBlur(src, region);
 
+  // ── 비회전 Rect 블러 ─────────────────────────────────────────────
   img.Image _applyRectBlur(img.Image src, BlurRegion region) {
     final box = region.boundingBox;
     final l = box.left.clamp(0, src.width - 1).toInt();
@@ -37,70 +38,13 @@ class BlurService {
     final b = box.bottom.clamp(0, src.height.toDouble()).toInt();
     if (r <= l || b <= t) return src;
     final cw = r - l, ch = b - t;
-
-    switch (region.effect) {
-      case BlurEffect.blackBar:
-        img.fillRect(src, x1: l, y1: t, x2: r, y2: b,
-            color: img.ColorRgb8(0, 0, 0));
-        break;
-      case BlurEffect.whiteBar:
-        img.fillRect(src, x1: l, y1: t, x2: r, y2: b,
-            color: img.ColorRgb8(255, 255, 255));
-        break;
-      case BlurEffect.redBar:
-        img.fillRect(src, x1: l, y1: t, x2: r, y2: b,
-            color: img.ColorRgb8(220, 30, 30));
-        break;
-      case BlurEffect.gaussian:
-        final crop = img.copyCrop(src, x: l, y: t, width: cw, height: ch);
-        img.compositeImage(src,
-            img.gaussianBlur(crop, radius: region.blurIntensity.toInt().clamp(2, 30)),
-            dstX: l, dstY: t);
-        break;
-      case BlurEffect.mosaic:
-        final crop = img.copyCrop(src, x: l, y: t, width: cw, height: ch);
-        img.compositeImage(src,
-            img.pixelate(crop,
-                size: region.blurIntensity.toInt().clamp(2, 80),
-                mode: img.PixelateMode.upperLeft),
-            dstX: l, dstY: t);
-        break;
-      case BlurEffect.heavyPixelate:
-        final crop = img.copyCrop(src, x: l, y: t, width: cw, height: ch);
-        img.compositeImage(src,
-            img.pixelate(crop,
-                size: region.blurIntensity.toInt().clamp(20, 100),
-                mode: img.PixelateMode.upperLeft),
-            dstX: l, dstY: t);
-        break;
-      case BlurEffect.frostedGlass:
-        final crop = img.copyCrop(src, x: l, y: t, width: cw, height: ch);
-        final blurred = img.gaussianBlur(crop,
-            radius: region.blurIntensity.toInt().clamp(2, 15));
-        img.compositeImage(src, blurred, dstX: l, dstY: t);
-        for (int py = t; py < b; py++) {
-          for (int px = l; px < r; px++) {
-            final p = src.getPixel(px, py);
-            src.setPixelRgb(px, py,
-              (p.r * 0.55 + 230 * 0.45).round().clamp(0, 255),
-              (p.g * 0.55 + 230 * 0.45).round().clamp(0, 255),
-              (p.b * 0.55 + 230 * 0.45).round().clamp(0, 255),
-            );
-          }
-        }
-        break;
-      case BlurEffect.grayscaleBlur:
-        final crop = img.copyCrop(src, x: l, y: t, width: cw, height: ch);
-        final gray = img.grayscale(crop);
-        img.compositeImage(src,
-            img.gaussianBlur(gray,
-                radius: region.blurIntensity.toInt().clamp(2, 20)),
-            dstX: l, dstY: t);
-        break;
-    }
+    final crop = img.copyCrop(src, x: l, y: t, width: cw, height: ch);
+    final processed = _processCrop(crop, region);
+    img.compositeImage(src, processed, dstX: l, dstY: t);
     return src;
   }
 
+  // ── 회전 박스 블러 ───────────────────────────────────────────────
   img.Image _applyRotatedBlur(img.Image src, BlurRegion region) {
     final box = region.boundingBox;
     final angle = region.angle;
@@ -120,7 +64,6 @@ class BlurService {
 
     final cosN = math.cos(-angle), sinN = math.sin(-angle);
     final result = src.clone();
-
     for (int py = at; py < ab && py < src.height; py++) {
       for (int px = al; px < ar && px < src.width; px++) {
         final dx = px - cx, dy = py - cy;
@@ -138,45 +81,48 @@ class BlurService {
     return result;
   }
 
+  // ── 효과별 이미지 처리 ───────────────────────────────────────────
   img.Image _processCrop(img.Image crop, BlurRegion region) {
     switch (region.effect) {
-      case BlurEffect.blackBar:
-        final r = img.Image(width: crop.width, height: crop.height);
-        img.fill(r, color: img.ColorRgb8(0, 0, 0));
-        return r;
-      case BlurEffect.whiteBar:
-        final r = img.Image(width: crop.width, height: crop.height);
-        img.fill(r, color: img.ColorRgb8(255, 255, 255));
-        return r;
-      case BlurEffect.redBar:
-        final r = img.Image(width: crop.width, height: crop.height);
-        img.fill(r, color: img.ColorRgb8(220, 30, 30));
-        return r;
       case BlurEffect.gaussian:
         return img.gaussianBlur(crop,
-            radius: region.blurIntensity.toInt().clamp(2, 30));
-      case BlurEffect.mosaic:
+            radius: region.blurIntensity.toInt().clamp(2, 50));
+
+      case BlurEffect.frostedGlass:
+      // [수정됨] 크리스탈 산란(Scatter) 효과 - 픽셀을 무작위로 흩뿌려 깨진 유리 느낌 구현
+        final intensity = region.blurIntensity.toInt().clamp(2, 40);
+        final result = crop.clone();
+        final rand = math.Random(42);
+
+        for (int y = 0; y < crop.height; y++) {
+          for (int x = 0; x < crop.width; x++) {
+            int dx = ((rand.nextDouble() - 0.5) * 2 * intensity).toInt();
+            int dy = ((rand.nextDouble() - 0.5) * 2 * intensity).toInt();
+
+            int nx = (x + dx).clamp(0, crop.width - 1);
+            int ny = (y + dy).clamp(0, crop.height - 1);
+
+            result.setPixel(x, y, crop.getPixel(nx, ny));
+          }
+        }
+        return result;
+
+      case BlurEffect.pixelate:
         return img.pixelate(crop,
             size: region.blurIntensity.toInt().clamp(2, 80),
             mode: img.PixelateMode.upperLeft);
-      case BlurEffect.heavyPixelate:
-        return img.pixelate(crop,
-            size: region.blurIntensity.toInt().clamp(20, 100),
-            mode: img.PixelateMode.upperLeft);
-      case BlurEffect.frostedGlass:
+
+      case BlurEffect.fog:
         final blurred = img.gaussianBlur(crop,
-            radius: region.blurIntensity.toInt().clamp(2, 15));
+            radius: region.blurIntensity.toInt().clamp(5, 50));
         for (final p in blurred) {
           blurred.setPixelRgb(p.x, p.y,
-            (p.r * 0.55 + 230 * 0.45).round().clamp(0, 255),
-            (p.g * 0.55 + 230 * 0.45).round().clamp(0, 255),
-            (p.b * 0.55 + 230 * 0.45).round().clamp(0, 255),
+            (p.r * 0.45 + 240 * 0.55).round().clamp(0, 255),
+            (p.g * 0.45 + 240 * 0.55).round().clamp(0, 255),
+            (p.b * 0.45 + 240 * 0.55).round().clamp(0, 255),
           );
         }
         return blurred;
-      case BlurEffect.grayscaleBlur:
-        return img.gaussianBlur(img.grayscale(crop),
-            radius: region.blurIntensity.toInt().clamp(2, 20));
     }
   }
 

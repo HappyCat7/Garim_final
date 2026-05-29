@@ -1,24 +1,15 @@
 import 'package:flutter/material.dart';
 
-// [Req 4] 8종 블러 효과
+// [요구사항 2 반영] 블러 텍스처 4종으로 통폐합 및 리뉴얼
 enum BlurEffect {
-  gaussian,       // 가우시안 흐림
-  mosaic,         // 모자이크
-  blackBar,       // 검정 줄
-  frostedGlass,   // 반투명 유리
-  whiteBar,       // 흰색 줄
-  redBar,         // 빨간색 줄 (Redaction)
-  heavyPixelate,  // 아주 굵은 픽셀 모자이크
-  grayscaleBlur,  // 흑백 흐림
+  gaussian,      // 1. 기존 흐림 (Standard Gaussian Blur)
+  frostedGlass,  // 2. 유리 질감 (Frosted Glass - 약간의 밝기 증가 + 블러)
+  pixelate,      // 3. 픽셀 블러 (Pixelate - 부드러운 기본 픽셀화)
+  fog,           // 4. 뿌연 안개 (Fog/Mist - 뽀얀 느낌의 블러 처리)
 }
 
 enum DetectionType {
-  face,
-  licensePlate,
-  document,
-  card,
-  shippingLabel,
-  manual,
+  face, licensePlate, document, card, shippingLabel, manual,
 }
 
 class DetectionResult {
@@ -57,8 +48,7 @@ class DetectionResult {
     DetectionType.face          => const Color(0xFFFF6B6B),
     DetectionType.licensePlate  => const Color(0xFF6C63FF),
     DetectionType.document      => privacyTexts.isNotEmpty
-        ? const Color(0xFFFF6B6B)
-        : const Color(0xFF43E97B),
+        ? const Color(0xFFFF6B6B) : const Color(0xFF43E97B),
     DetectionType.card          => Colors.orange,
     DetectionType.shippingLabel => Colors.purple,
     DetectionType.manual        => const Color(0xFF00BCD4),
