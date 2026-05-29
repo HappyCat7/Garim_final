@@ -59,6 +59,9 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
   Offset? _drawStart;
   Rect? _drawingRect;
 
+  // 💡 드래그 이동을 1:1로 부드럽게 추적하기 위한 새로운 변수
+  Offset? _boxDragLast;
+
   double get _sx => widget.displaySize.width / widget.imageSize.width;
   double get _sy => widget.displaySize.height / widget.imageSize.height;
 
@@ -184,23 +187,31 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
                 HapticFeedback.lightImpact();
                 _select(region.id);
               },
-              onPanStart: (_) {
+
+              // 💡 이동 버그 해결: 1:1 터치 추적 방식으로 변경
+              onPanStart: (d) {
                 HapticFeedback.selectionClick();
                 _select(region.id);
+                _boxDragLast = d.globalPosition; // 터치 시작점 저장
               },
               onPanUpdate: (d) {
-                final delta = d.delta / _zoomScale;
-                final dx = delta.dx / _sx;
-                final dy = delta.dy / _sy;
+                if (_boxDragLast == null) return;
 
+                // 프레임이 끊기지 않도록 글로벌 좌표 기준으로 미세 이동값 직접 계산
+                final delta = d.globalPosition - _boxDragLast!;
+                _boxDragLast = d.globalPosition; // 기준점 갱신
+
+                final dx = delta.dx / (_zoomScale * _sx);
+                final dy = delta.dy / (_zoomScale * _sy);
+
+                // 💡 이동 제한(Clamp) 완전 해제! 이제 화면 끝부분에서도 답답하지 않게 휙휙 움직입니다.
                 final shiftedBox = region.boundingBox.shift(Offset(dx, dy));
-                final clampedLeft = shiftedBox.left.clamp(0.0, widget.imageSize.width - shiftedBox.width);
-                final clampedTop = shiftedBox.top.clamp(0.0, widget.imageSize.height - shiftedBox.height);
-
-                final finalBox = Rect.fromLTWH(clampedLeft, clampedTop, shiftedBox.width, shiftedBox.height);
-                widget.onRegionUpdated(region.copyWith(boundingBox: finalBox));
+                widget.onRegionUpdated(region.copyWith(boundingBox: shiftedBox));
               },
-              onPanEnd: (_) => widget.onEditCommit?.call(),
+              onPanEnd: (_) {
+                _boxDragLast = null;
+                widget.onEditCommit?.call();
+              },
 
               child: SizedBox(
                 width: dr.width, height: dr.height,
@@ -259,7 +270,6 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
         );
 
       case BlurEffect.frostedGlass:
-      // [수정됨] 화면상에서 크리스탈 산란(Scatter) 파편을 렌더링
         return Stack(fit: StackFit.expand, children: [
           BackdropFilter(
             filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
@@ -354,7 +364,6 @@ class _GridPainter extends CustomPainter {
   @override bool shouldRepaint(_GridPainter o) => tileSize != o.tileSize;
 }
 
-// ─── [수정됨] 깨진 유리(산란) 효과 UI 프리뷰 Painter ──────────────────────────
 class _ScatteredGlassPainter extends CustomPainter {
   final double intensity;
   const _ScatteredGlassPainter(this.intensity);
@@ -469,7 +478,6 @@ class _SelectionHandles extends StatelessWidget {
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        // 💡 중요: IgnorePointer가 터치 먹통(충돌)을 막아줍니다!
         Positioned.fill(
           child: IgnorePointer(
             child: CustomPaint(painter: _DashLinePainter(
