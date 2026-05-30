@@ -36,28 +36,22 @@ class BlurEditorScreen extends StatefulWidget {
 }
 
 class _BlurEditorScreenState extends State<BlurEditorScreen> {
-  // ── 영역 상태 ──────────────────────────────────────────────────────
   late List<BlurRegion> _regions;
   int _regionCounter = 0;
-
-  // ── 선택 상태 (에디터 + 오버레이 동기화) ─────────────────────────
   String? _selectedId;
-
-  // ── UI 상태 ────────────────────────────────────────────────────────
   bool _drawMode = false;
   bool _isExporting = false;
 
-  // ── Undo / Redo ────────────────────────────────────────────
+  // 🌟 새 기능: 꾹 누르면 원본 보기 기능 활성화
+  bool _showOriginal = false;
+
   final List<List<BlurRegion>> _history = [];
   int _historyIndex = -1;
   bool get _canUndo => _historyIndex > 0;
   bool get _canRedo => _historyIndex < _history.length - 1;
   bool get _hasEdits => _historyIndex > 0;
 
-  // ── InteractiveViewer ─────────────────────────────────────────────
   final _tc = TransformationController();
-
-  // ── 줌 인디케이터 ─────────────────────────────────────────────────
   double _zoomLevel = 1.0;
   bool _showZoomBadge = false;
   Timer? _zoomTimer;
@@ -87,7 +81,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     super.dispose();
   }
 
-  // ── 초기 영역 구성 ─────────────────────────────────────────────────
   void _buildInitialRegions() {
     final list = <BlurRegion>[];
     for (int i = 0; i < widget.detections.length; i++) {
@@ -99,7 +92,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       list.add(BlurRegion.fromDetection(
         widget.ocrDetections[i],
         id: 'ocr_$i',
-        defaultEffect: BlurEffect.gaussian, // 기본값 gaussian으로 통일
+        defaultEffect: BlurEffect.gaussian,
       ).copyWith(
           isBlurred: widget.typeBlurEnabled[DetectionType.document] ?? true));
     }
@@ -107,7 +100,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     _regionCounter = list.length;
   }
 
-  // ── Undo / Redo ────────────────────────────────────────────────────
   void _pushHistory() {
     if (_historyIndex < _history.length - 1) {
       _history.removeRange(_historyIndex + 1, _history.length);
@@ -141,7 +133,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     });
   }
 
-  // ── 뒤로가기 안전장치 ──────────────────────────────────────────────
   Future<void> _handleBackPress() async {
     if (!_hasEdits) { if (mounted) Navigator.of(context).pop(); return; }
     HapticFeedback.mediumImpact();
@@ -173,7 +164,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     if (leave == true && mounted) Navigator.of(context).pop();
   }
 
-  // ── 콜백 ─────────────────────────────────────────────────────────
   BlurRegion? get _selectedRegion {
     if (_selectedId == null) return null;
     try { return _regions.firstWhere((r) => r.id == _selectedId); }
@@ -189,7 +179,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
 
   void _onEditCommit() => _pushHistory();
 
-  // 선택 상태 동기화 (오버레이 → 에디터)
   void _onSelectionChanged(String? id) {
     if (_selectedId != id) setState(() => _selectedId = id);
   }
@@ -227,7 +216,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     ));
   }
 
-  // ── Export ───────────────────────────────────────────────────────
   Future<void> _goToExport() async {
     setState(() => _isExporting = true);
     try {
@@ -248,17 +236,16 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     }
   }
 
-  // ── [요구사항 2, 5 반영] 효과 4종 통폐합 및 슬라이더 정규화 ─────────────────
   void _changeEffect(BlurEffect effect) {
     if (_selectedRegion == null) return;
     HapticFeedback.selectionClick();
 
-    // 각 효과별 최적의 기본 강도값
     final intensity = switch (effect) {
       BlurEffect.gaussian     => 15.0,
       BlurEffect.frostedGlass => 15.0,
       BlurEffect.pixelate     => 20.0,
       BlurEffect.fog          => 20.0,
+      BlurEffect.point        => 25.0, // 포인트 효과 기본값
     };
 
     _onRegionUpdated(_selectedRegion!.copyWith(effect: effect, blurIntensity: intensity));
@@ -273,6 +260,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       BlurEffect.frostedGlass => '유리 강도',
       BlurEffect.pixelate     => '픽셀 크기',
       BlurEffect.fog          => '안개 두께',
+      BlurEffect.point        => '도트 크기',
       null                    => '',
     };
   }
@@ -280,6 +268,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
   double get _sliderMax {
     return switch (_selectedRegion?.effect) {
       BlurEffect.pixelate => 80.0,
+      BlurEffect.point    => 80.0,
       BlurEffect.fog      => 50.0,
       _                   => 30.0,
     };
@@ -287,7 +276,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
 
   int get _activeCount => _regions.where((r) => r.isBlurred).length;
 
-  // ─────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -307,7 +295,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────
   AppBar _buildAppBar() => AppBar(
     backgroundColor: const Color(0xFF0F0F0F),
     foregroundColor: Colors.white,
@@ -334,14 +321,27 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     ]),
     elevation: 0,
     actions: [
-      IconButton(
-        icon: const Icon(Icons.visibility_outlined, size: 22),
-        onPressed: () {
+      // 🌟 새 기능: 꾹 누르면 원본 보기 로직으로 완전히 교체됨!
+      GestureDetector(
+        onTapDown: (_) {
           HapticFeedback.lightImpact();
-          final allOn = _regions.every((r) => r.isBlurred);
-          setState(() => _regions = _regions.map((r) => r.copyWith(isBlurred: !allOn)).toList());
-          _pushHistory();
+          setState(() => _showOriginal = true); // 누를 때 원본 보기 켬
         },
+        onTapUp: (_) {
+          setState(() => _showOriginal = false); // 손 떼면 원상복구
+        },
+        onTapCancel: () {
+          setState(() => _showOriginal = false); // 드래그 시 원상복구
+        },
+        child: Container(
+          color: Colors.transparent, // 터치 영역을 넓게 확보
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Icon(
+            _showOriginal ? Icons.visibility : Icons.visibility_outlined,
+            size: 24,
+            color: _showOriginal ? const Color(0xFF6C63FF) : Colors.white,
+          ),
+        ),
       ),
     ],
   );
@@ -383,19 +383,21 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                       children: [
                         Image.memory(widget.originalBytes,
                             fit: BoxFit.fill, width: dw, height: dh),
-                        BlurRegionOverlay(
-                          regions: _regions,
-                          imageSize: widget.imageSize,
-                          displaySize: displaySize,
-                          drawMode: _drawMode,
-                          transformationController: _tc,
-                          selectedId: _selectedId,
-                          onRegionUpdated: _onRegionUpdated,
-                          onRegionAdded: _onRegionAdded,
-                          onRegionDeleted: _onRegionDeleted,
-                          onEditCommit: _onEditCommit,
-                          onSelectionChanged: _onSelectionChanged,
-                        ),
+                        // 🌟 원본보기(_showOriginal)가 아닐 때만 블러 위젯들을 렌더링함!
+                        if (!_showOriginal)
+                          BlurRegionOverlay(
+                            regions: _regions,
+                            imageSize: widget.imageSize,
+                            displaySize: displaySize,
+                            drawMode: _drawMode,
+                            transformationController: _tc,
+                            selectedId: _selectedId,
+                            onRegionUpdated: _onRegionUpdated,
+                            onRegionAdded: _onRegionAdded,
+                            onRegionDeleted: _onRegionDeleted,
+                            onEditCommit: _onEditCommit,
+                            onSelectionChanged: _onSelectionChanged,
+                          ),
                         if (_isExporting)
                           Positioned.fill(
                             child: Container(
@@ -566,7 +568,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                 ),
               ),
 
-              // [요구사항 2] 4가지 핵심 효과로 칩 UI 통폐합
               SizedBox(
                 height: 76,
                 child: ListView(
@@ -575,11 +576,14 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                   children: [
                     _EffectChip(label: '기본 흐림',   effect: BlurEffect.gaussian,     icon: Icons.blur_on,    accentColor: const Color(0xFF6C63FF), selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '유리 질감',   effect: BlurEffect.frostedGlass, icon: Icons.water_drop, accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '유리 산란',   effect: BlurEffect.frostedGlass, icon: Icons.water_drop, accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '픽셀 모자이크', effect: BlurEffect.pixelate,     icon: Icons.apps,       accentColor: Colors.orange,           selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '모자이크', effect: BlurEffect.pixelate,     icon: Icons.apps,       accentColor: Colors.orange,           selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
                     _EffectChip(label: '뿌연 안개',   effect: BlurEffect.fog,          icon: Icons.cloud,      accentColor: Colors.teal,             selected: sel.effect, onTap: _changeEffect),
+                    const SizedBox(width: 6),
+                    // 🌟 포인트 효과 칩 추가
+                    _EffectChip(label: '포인트(점)',   effect: BlurEffect.point,        icon: Icons.bubble_chart, accentColor: Colors.pinkAccent,       selected: sel.effect, onTap: _changeEffect),
                   ],
                 ),
               ),

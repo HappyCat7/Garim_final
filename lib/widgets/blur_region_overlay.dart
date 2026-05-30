@@ -58,8 +58,6 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
   String? _selectedId;
   Offset? _drawStart;
   Rect? _drawingRect;
-
-  // 💡 드래그 이동을 1:1로 부드럽게 추적하기 위한 새로운 변수
   Offset? _boxDragLast;
 
   double get _sx => widget.displaySize.width / widget.imageSize.width;
@@ -187,24 +185,19 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
                 HapticFeedback.lightImpact();
                 _select(region.id);
               },
-
-              // 💡 이동 버그 해결: 1:1 터치 추적 방식으로 변경
               onPanStart: (d) {
                 HapticFeedback.selectionClick();
                 _select(region.id);
-                _boxDragLast = d.globalPosition; // 터치 시작점 저장
+                _boxDragLast = d.globalPosition;
               },
               onPanUpdate: (d) {
                 if (_boxDragLast == null) return;
-
-                // 프레임이 끊기지 않도록 글로벌 좌표 기준으로 미세 이동값 직접 계산
                 final delta = d.globalPosition - _boxDragLast!;
-                _boxDragLast = d.globalPosition; // 기준점 갱신
+                _boxDragLast = d.globalPosition;
 
                 final dx = delta.dx / (_zoomScale * _sx);
                 final dy = delta.dy / (_zoomScale * _sy);
 
-                // 💡 이동 제한(Clamp) 완전 해제! 이제 화면 끝부분에서도 답답하지 않게 휙휙 움직입니다.
                 final shiftedBox = region.boundingBox.shift(Offset(dx, dy));
                 widget.onRegionUpdated(region.copyWith(boundingBox: shiftedBox));
               },
@@ -226,10 +219,7 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
                         isActive: region.isBlurred,
                       ),
                     ),
-                    Positioned(
-                      top: -22, left: 0,
-                      child: _BoxLabel(region: region),
-                    ),
+                    // 💡 이름표(BoxLabel) 렌더링 코드 완벽 제거!
                   ],
                 ),
               ),
@@ -297,6 +287,15 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
             child: Container(color: Colors.transparent),
           ),
           Container(color: const Color(0xFFF0F0F0).withOpacity(0.55)),
+        ]);
+
+      case BlurEffect.point:
+        return Stack(fit: StackFit.expand, children: [
+          BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
+            child: Container(color: Colors.white.withOpacity(0.15)),
+          ),
+          CustomPaint(painter: _PointPainter(intensity)),
         ]);
     }
   }
@@ -392,6 +391,31 @@ class _ScatteredGlassPainter extends CustomPainter {
   bool shouldRepaint(_ScatteredGlassPainter o) => intensity != o.intensity;
 }
 
+class _PointPainter extends CustomPainter {
+  final double intensity;
+  const _PointPainter(this.intensity);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rand = math.Random(42);
+    final paint = Paint()..style = PaintingStyle.fill;
+    int numDots = (size.width * size.height / 50).toInt();
+
+    for (int i = 0; i < numDots; i++) {
+      double x = rand.nextDouble() * size.width;
+      double y = rand.nextDouble() * size.height;
+      double r = rand.nextDouble() * (intensity * 0.15) + 2.0;
+
+      paint.color = Colors.black.withOpacity(rand.nextDouble() * 0.3 + 0.1);
+      canvas.drawCircle(Offset(x, y), r, paint);
+
+      paint.color = Colors.white.withOpacity(rand.nextDouble() * 0.5 + 0.1);
+      canvas.drawCircle(Offset(x + r, y + r), r * 0.8, paint);
+    }
+  }
+  @override bool shouldRepaint(_PointPainter o) => intensity != o.intensity;
+}
+
 class _BoxBorderPainter extends CustomPainter {
   final Color color;
   final bool isSelected, isActive;
@@ -410,7 +434,7 @@ class _BoxBorderPainter extends CustomPainter {
     }
     canvas.drawRRect(
       RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(4)),
-      Paint()..color = c..style = PaintingStyle.stroke..strokeWidth = isSelected ? 3.0 : 2.0,
+      Paint()..color = c..style = PaintingStyle.stroke..strokeWidth = isSelected ? 1.5 : 1.0,
     );
     if (isSelected) {
       canvas.drawRRect(
@@ -425,28 +449,7 @@ class _BoxBorderPainter extends CustomPainter {
       color != o.color || isSelected != o.isSelected || isActive != o.isActive;
 }
 
-class _BoxLabel extends StatelessWidget {
-  final BlurRegion region;
-  const _BoxLabel({required this.region});
-
-  static String _el(BlurEffect e) => switch (e) {
-    BlurEffect.gaussian     => 'G',
-    BlurEffect.frostedGlass => 'Fr',
-    BlurEffect.pixelate     => 'Px',
-    BlurEffect.fog          => 'Fg',
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final c = region.isBlurred ? region.color : region.color.withOpacity(0.35);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-      decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(4)),
-      child: Text('${region.label} ${_el(region.effect)}',
-          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-    );
-  }
-}
+// 💡 _BoxLabel 클래스 완전 삭제 완료
 
 class _SelectionHandles extends StatelessWidget {
   final BlurRegion region;
@@ -534,8 +537,8 @@ class _ResizeHandleState extends State<_ResizeHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const vr = 5.0;
-    const pad = 22.0;
+    const vr = 3.5;
+    const pad = 24.0;
     const total = vr + pad;
 
     return Positioned(
@@ -597,7 +600,7 @@ class _RotationHandleState extends State<_RotationHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const vr = 8.0;
+    const vr = 5.5;
     const pad = 16.0;
     const total = vr + pad;
 
@@ -630,7 +633,7 @@ class _RotationHandleState extends State<_RotationHandle> {
                 color: widget.color, shape: BoxShape.circle,
                 boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 5)],
               ),
-              child: const Icon(Icons.rotate_right, color: Colors.white, size: 11),
+              child: const Icon(Icons.rotate_right, color: Colors.white, size: 9),
             ),
           ),
         ),

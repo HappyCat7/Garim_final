@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 
 // [요구사항 2 반영] 블러 텍스처 4종으로 통폐합 및 리뉴얼
 enum BlurEffect {
-  gaussian,      // 1. 기존 흐림 (Standard Gaussian Blur)
-  frostedGlass,  // 2. 유리 질감 (Frosted Glass - 약간의 밝기 증가 + 블러)
-  pixelate,      // 3. 픽셀 블러 (Pixelate - 부드러운 기본 픽셀화)
-  fog,           // 4. 뿌연 안개 (Fog/Mist - 뽀얀 느낌의 블러 처리)
+  gaussian,      // 기존 흐림
+  frostedGlass,  // 유리 질감 (산란)
+  pixelate,      // 픽셀 모자이크
+  fog,           // 뿌연 안개
+  point,         // 🌟 새로 추가됨! (포인트 도트)
 }
 
 enum DetectionType {

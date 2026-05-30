@@ -29,7 +29,6 @@ class BlurService {
           ? _applyRectBlur(src, region)
           : _applyRotatedBlur(src, region);
 
-  // ── 비회전 Rect 블러 ─────────────────────────────────────────────
   img.Image _applyRectBlur(img.Image src, BlurRegion region) {
     final box = region.boundingBox;
     final l = box.left.clamp(0, src.width - 1).toInt();
@@ -44,7 +43,6 @@ class BlurService {
     return src;
   }
 
-  // ── 회전 박스 블러 ───────────────────────────────────────────────
   img.Image _applyRotatedBlur(img.Image src, BlurRegion region) {
     final box = region.boundingBox;
     final angle = region.angle;
@@ -81,7 +79,6 @@ class BlurService {
     return result;
   }
 
-  // ── 효과별 이미지 처리 ───────────────────────────────────────────
   img.Image _processCrop(img.Image crop, BlurRegion region) {
     switch (region.effect) {
       case BlurEffect.gaussian:
@@ -89,7 +86,6 @@ class BlurService {
             radius: region.blurIntensity.toInt().clamp(2, 50));
 
       case BlurEffect.frostedGlass:
-      // [수정됨] 크리스탈 산란(Scatter) 효과 - 픽셀을 무작위로 흩뿌려 깨진 유리 느낌 구현
         final intensity = region.blurIntensity.toInt().clamp(2, 40);
         final result = crop.clone();
         final rand = math.Random(42);
@@ -123,6 +119,35 @@ class BlurService {
           );
         }
         return blurred;
+
+    // 🌟 새로 추가된 포인트(점) 효과 로직
+      case BlurEffect.point:
+        final intensity = region.blurIntensity.toInt().clamp(5, 60);
+        // 1. 하얗고 뿌연 배경을 먼저 만듭니다.
+        final result = img.gaussianBlur(crop.clone(), radius: 6);
+        for (final p in result) {
+          result.setPixelRgb(p.x, p.y,
+            (p.r * 0.3 + 255 * 0.7).round().clamp(0, 255),
+            (p.g * 0.3 + 255 * 0.7).round().clamp(0, 255),
+            (p.b * 0.3 + 255 * 0.7).round().clamp(0, 255),
+          );
+        }
+
+        final rand = math.Random(42);
+        // 2. 도트를 무작위로 찍습니다.
+        int numDots = (crop.width * crop.height / 35).toInt();
+
+        for (int i = 0; i < numDots; i++) {
+          int cx = rand.nextInt(crop.width);
+          int cy = rand.nextInt(crop.height);
+          // 강도에 따라 점 크기가 조절됨
+          int r = (rand.nextDouble() * (intensity * 0.15) + 2).toInt();
+
+          // 원본 사진의 색상을 추출해서 그대로 점 색깔로 사용!
+          final c = crop.getPixel(cx, cy);
+          img.fillCircle(result, x: cx, y: cy, radius: r, color: c);
+        }
+        return result;
     }
   }
 
