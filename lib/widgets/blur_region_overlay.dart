@@ -219,7 +219,6 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
                         isActive: region.isBlurred,
                       ),
                     ),
-                    // 💡 이름표(BoxLabel) 렌더링 코드 완벽 제거!
                   ],
                 ),
               ),
@@ -449,8 +448,6 @@ class _BoxBorderPainter extends CustomPainter {
       color != o.color || isSelected != o.isSelected || isActive != o.isActive;
 }
 
-// 💡 _BoxLabel 클래스 완전 삭제 완료
-
 class _SelectionHandles extends StatelessWidget {
   final BlurRegion region;
   final Rect dispRect;
@@ -538,7 +535,8 @@ class _ResizeHandleState extends State<_ResizeHandle> {
   @override
   Widget build(BuildContext context) {
     const vr = 3.5;
-    const pad = 24.0;
+    // 💡 크기 조절 인식 영역(Padding)을 24px -> 10px로 대폭 줄여서 오작동 방지!
+    const pad = 10.0;
     const total = vr + pad;
 
     return Positioned(
@@ -601,7 +599,8 @@ class _RotationHandleState extends State<_RotationHandle> {
   @override
   Widget build(BuildContext context) {
     const vr = 5.5;
-    const pad = 16.0;
+    // 💡 회전 인식 영역(Padding)도 16px -> 10px로 줄였습니다.
+    const pad = 10.0;
     const total = vr + pad;
 
     return Positioned(
