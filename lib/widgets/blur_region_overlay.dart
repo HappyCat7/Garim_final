@@ -514,6 +514,7 @@ class _SelectionHandles extends StatelessWidget {
   }
 }
 
+// 🌟 크기 조절 핸들 (투명 패딩 극한 다이어트)
 class _ResizeHandle extends StatefulWidget {
   final Offset position;
   final Color color;
@@ -534,9 +535,8 @@ class _ResizeHandleState extends State<_ResizeHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const vr = 3.5;
-    // 💡 크기 조절 인식 영역(Padding)을 24px -> 10px로 대폭 줄여서 오작동 방지!
-    const pad = 10.0;
+    const vr = 4.5;   // 시각적 크기는 약간만 키워서 눈에 잘 띄게
+    const pad = 2.5;  // 💡 투명 패딩을 10.0 -> 2.5로 대폭 축소! (정확히 집어야만 반응)
     const total = vr + pad;
 
     return Positioned(
@@ -575,6 +575,7 @@ class _ResizeHandleState extends State<_ResizeHandle> {
   }
 }
 
+// 🌟 회전 핸들 (마찬가지로 투명 패딩 극한 다이어트)
 class _RotationHandle extends StatefulWidget {
   final Offset position, boxCenter;
   final double currentAngle;
@@ -598,9 +599,8 @@ class _RotationHandleState extends State<_RotationHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const vr = 5.5;
-    // 💡 회전 인식 영역(Padding)도 16px -> 10px로 줄였습니다.
-    const pad = 10.0;
+    const vr = 6.0;
+    const pad = 2.5; // 💡 여기도 투명 패딩을 10.0 -> 2.5로 축소!
     const total = vr + pad;
 
     return Positioned(
