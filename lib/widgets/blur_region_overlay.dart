@@ -329,7 +329,8 @@ class _BlurRegionOverlayState extends State<BlurRegionOverlay> {
     onPanEnd: (_) {
       if (_drawingRect != null) {
         final n = _norm(_drawingRect!);
-        if (n.width > 20 && n.height > 20) widget.onRegionAdded(_toImg(n));
+        // 💡 수정 2: 아무리 작은 박스(2px 이상)라도 삭제되지 않고 100% 생성되도록 제한을 풀었습니다!
+        if (n.width > 2 && n.height > 2) widget.onRegionAdded(_toImg(n));
       }
       setState(() { _drawStart = null; _drawingRect = null; });
     },
@@ -514,7 +515,6 @@ class _SelectionHandles extends StatelessWidget {
   }
 }
 
-// 🌟 크기 조절 핸들 (투명 패딩 극한 다이어트)
 class _ResizeHandle extends StatefulWidget {
   final Offset position;
   final Color color;
@@ -535,8 +535,9 @@ class _ResizeHandleState extends State<_ResizeHandle> {
 
   @override
   Widget build(BuildContext context) {
-    const vr = 4.5;   // 시각적 크기는 약간만 키워서 눈에 잘 띄게
-    const pad = 2.5;  // 💡 투명 패딩을 10.0 -> 2.5로 대폭 축소! (정확히 집어야만 반응)
+    const vr = 4.5;
+    // 💡 수정 1: 투명 패딩을 0.0으로 완전 제거! 정확히 하얀 동그라미만 인식합니다.
+    const pad = 0.0;
     const total = vr + pad;
 
     return Positioned(
@@ -575,7 +576,6 @@ class _ResizeHandleState extends State<_ResizeHandle> {
   }
 }
 
-// 🌟 회전 핸들 (마찬가지로 투명 패딩 극한 다이어트)
 class _RotationHandle extends StatefulWidget {
   final Offset position, boxCenter;
   final double currentAngle;
@@ -600,7 +600,8 @@ class _RotationHandleState extends State<_RotationHandle> {
   @override
   Widget build(BuildContext context) {
     const vr = 6.0;
-    const pad = 2.5; // 💡 여기도 투명 패딩을 10.0 -> 2.5로 축소!
+    // 💡 회전 핸들도 투명 패딩 0.0으로 완전 제거!
+    const pad = 0.0;
     const total = vr + pad;
 
     return Positioned(
