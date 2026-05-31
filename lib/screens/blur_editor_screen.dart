@@ -302,23 +302,10 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
       onPressed: _handleBackPress,
     ),
-    title: Row(children: [
-      Text(_drawMode ? '✏️ 그리기' : '편집',
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-      if (_activeCount > 0) ...[
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-          decoration: BoxDecoration(
-            color: Color(0xFF8FC9F7).withOpacity(0.2),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Color(0xFF8FC9F7).withOpacity(0.4)),
-          ),
-          child: Text('$_activeCount',
-              style: const TextStyle(color: Color(0xFF6C63FF), fontSize: 11, fontWeight: FontWeight.bold)),
-        ),
-      ],
-    ]),
+    title: const Text(
+      '편집',
+      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+    ),
     elevation: 0,
     actions: [
       // 🌟 새 기능: 꾹 누르면 원본 보기 로직으로 완전히 교체됨!
@@ -444,8 +431,6 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
-          const Text('편집 기록',
-              style: TextStyle(color: Color(0xFF555555), fontSize: 11)),
           const Spacer(),
           _UndoRedoBtn(
             icon: Icons.undo_rounded,
@@ -470,8 +455,8 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
 
     return Container(
       decoration: const BoxDecoration(
-        color: Color(0xFF1A1A1A),
-        border: Border(top: BorderSide(color: Color(0xFF2D2D2D))),
+        color: Color(0xFFFFFFFF),
+        border: Border(top: BorderSide(color: Color(0xFFDCEFF8))),
       ),
       child: SafeArea(
         top: false,
@@ -501,7 +486,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                           HapticFeedback.selectionClick();
                           setState(() => _drawMode = false);
                         }),
-                    _buildModeBtn(Icons.edit_outlined, '박스 그리기',
+                    _buildModeBtn(Icons.edit_outlined, '블러 추가',
                         _drawMode, const Color(0xFF00BCD4), () {
                           HapticFeedback.selectionClick();
                           setState(() => _drawMode = true);
@@ -574,16 +559,16 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                   children: [
-                    _EffectChip(label: '기본 흐림',   effect: BlurEffect.gaussian,     icon: Icons.blur_on,    accentColor: const Color(0xFF8FC9F7), selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: 'Blur',   effect: BlurEffect.gaussian,     icon: Icons.blur_on,    accentColor: const Color(0xFF8FC9F7), selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '유리 산란',   effect: BlurEffect.frostedGlass, icon: Icons.water_drop, accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: 'Glass',   effect: BlurEffect.frostedGlass, icon: Icons.water_drop, accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '모자이크', effect: BlurEffect.pixelate,     icon: Icons.apps,       accentColor: Colors.orange,           selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: 'Mosaic', effect: BlurEffect.pixelate,     icon: Icons.apps,       accentColor: Colors.orange,           selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
-                    _EffectChip(label: '뿌연 안개',   effect: BlurEffect.fog,          icon: Icons.cloud,      accentColor: Colors.teal,             selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: 'Foggy',   effect: BlurEffect.fog,          icon: Icons.cloud,      accentColor: Colors.teal,             selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
                     // 🌟 포인트 효과 칩 추가
-                    _EffectChip(label: '포인트(점)',   effect: BlurEffect.point,        icon: Icons.bubble_chart, accentColor: Colors.pinkAccent,       selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: 'Point',   effect: BlurEffect.point,        icon: Icons.bubble_chart, accentColor: Colors.pinkAccent,       selected: sel.effect, onTap: _changeEffect),
                   ],
                 ),
               ),
@@ -637,20 +622,8 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                   child: _isExporting
                       ? const SizedBox(width: 20, height: 20,
                       child: CircularProgressIndicator(color: Color(0xFF1F2937), strokeWidth: 2))
-                      : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    const Text('저장하기',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text('$_activeCount개 블러',
-                          style: const TextStyle(fontSize: 11)),
-                    ),
-                  ]),
+                      : const Text('저장하기',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ),
             ),
@@ -744,10 +717,10 @@ class _EffectChip extends StatelessWidget {
         width: 74,
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
         decoration: BoxDecoration(
-          color: isActive ? accentColor : const Color(0xFF252525),
+          color: isActive ? accentColor : const Color(0xFFFFFFFF),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: isActive ? accentColor : const Color(0xFF363636),
+            color: isActive ? accentColor : const Color(0xFFDCEFF8),
             width: isActive ? 0 : 1,
           ),
           boxShadow: isActive

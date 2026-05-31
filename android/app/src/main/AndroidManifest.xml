@@ -12,7 +12,7 @@
 
     <application
         android:usesCleartextTraffic="true"
-        android:label="가림"
+        android:label="Garim"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

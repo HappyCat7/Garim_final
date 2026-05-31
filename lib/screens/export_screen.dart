@@ -60,7 +60,7 @@ class _ExportScreenState extends State<ExportScreen> {
       await file.writeAsBytes(widget.blurredImage);
       await Share.shareXFiles(
         [XFile(file.path)],
-        text: '가림 앱으로 개인정보를 보호했어요',
+        text: 'Garim 앱으로 개인정보를 보호했어요',
       );
     } catch (e) {
       if (mounted) {

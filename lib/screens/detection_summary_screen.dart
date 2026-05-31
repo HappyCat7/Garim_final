@@ -776,7 +776,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
                   Text(
                     label,
                     style: TextStyle(
-                      color: enabled ? Colors.white : const Color(0xFF6B7280),
+                      color: enabled ? const Color(0xFF1F2937) : const Color(0xFF6B7280),
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),

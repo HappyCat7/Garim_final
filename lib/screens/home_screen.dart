@@ -79,7 +79,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              const Text('가림',
+              const Text('Garim',
                   style: TextStyle(
                       color: Color(0xFF1F2937),
                       fontSize: 32,
