@@ -85,10 +85,10 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
+      backgroundColor: const Color(0xFFFFFFFF),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F0F0F),
-        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xFFFFFFFF),
+        foregroundColor: const Color(0xFF1F2937),
         title: Text(widget.title,              // ← 이렇게
             style: const TextStyle(fontWeight: FontWeight.bold)),
         elevation: 0,
@@ -105,7 +105,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
           const CircularProgressIndicator(color: Color(0xFF6C63FF)),
           const SizedBox(height: 24),
           Text(_statusMessage,
-              style: const TextStyle(color: Colors.white, fontSize: 16)),
+              style: const TextStyle(color: Color(0xFF1F2937), fontSize: 16)),
         ],
       ),
     );
@@ -119,7 +119,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
           margin: const EdgeInsets.all(16),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
+            color: Color(0xFFF7FAFC),
             borderRadius: BorderRadius.circular(12),
           ),
           child: Row(
@@ -129,8 +129,8 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                     ? Icons.check_circle_outline
                     : Icons.warning_amber_rounded,
                 color: _privacyResults.isEmpty
-                    ? const Color(0xFF43E97B)
-                    : const Color(0xFFFF6B6B),
+                    ? const Color(0xFF7DD3C7)
+                    : const Color(0xFF8FC9F7),
                 size: 28,
               ),
               const SizedBox(width: 12),
@@ -143,7 +143,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                           ? '개인정보가 발견되지 않았습니다'
                           : '${_privacyResults.length}개의 개인정보가 발견되었습니다',
                       style: const TextStyle(
-                        color: Colors.white,
+                        color: Color(0xFF1F2937),
                         fontWeight: FontWeight.bold,
                         fontSize: 14,
                       ),
@@ -213,7 +213,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                                 child: Container(
                                   decoration: BoxDecoration(
                                     border: Border.all(
-                                      color: const Color(0xFF43E97B),
+                                      color: Color(0xFF7DD3C7),
                                       width: 2,
                                     ),
                                     borderRadius: BorderRadius.circular(4),
@@ -242,10 +242,10 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                                     Container(
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: const Color(0xFFFF6B6B),
+                                          color: Color(0xFF8FC9F7),
                                           width: 2,
                                         ),
-                                        color: const Color(0xFFFF6B6B)
+                                        color: Color(0xFF8FC9F7)
                                             .withValues(alpha: 0.2),
                                         borderRadius: BorderRadius.circular(4),
                                       ),
@@ -257,7 +257,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                                         padding: const EdgeInsets.symmetric(
                                             horizontal: 4, vertical: 2),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFFFF6B6B),
+                                          color: Color(0xFF8FC9F7),
                                           borderRadius: BorderRadius.circular(4),
                                         ),
                                         child: Text(
@@ -265,7 +265,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                                               ? d.privacyTexts.first
                                               : '개인정보',
                                           style: const TextStyle(
-                                            color: Colors.white,
+                                            color: Color(0xFF1F2937),
                                             fontSize: 10,
                                             fontWeight: FontWeight.bold,
                                           ),
@@ -305,7 +305,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                     icon: const Icon(Icons.text_fields),
                     label: const Text('개인정보 영역만 블러처리'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFF6B6B),
+                      backgroundColor: const Color(0xFF8FC9F7),
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
@@ -329,7 +329,7 @@ class _DocumentTextScreenState extends State<DocumentTextScreen> {
                   icon: const Icon(Icons.blur_on),
                   label: const Text('문서 전체 블러처리'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
+                    backgroundColor: const Color(0xFF8FC9F7),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(

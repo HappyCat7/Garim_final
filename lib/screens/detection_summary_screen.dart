@@ -176,7 +176,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
             content: Text(
               '카드 ${filteredCards.length}개, 운송장 ${shippingResults.length}개 탐지 완료',
             ),
-            backgroundColor: const Color(0xFF2D2D2D),
+            backgroundColor: const Color(0xFFDCEFF8),
           ),
         );
       }
@@ -329,10 +329,10 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
+      backgroundColor: const Color(0xFFFFFFFF),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F0F0F),
-        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xFFFFFFFF),
+        foregroundColor: const Color(0xFF1F2937),
         title: const Text(
           '탐지 결과',
           style: TextStyle(
@@ -357,7 +357,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
           Text(
             _statusMessage,
             style: const TextStyle(
-              color: Colors.white,
+              color: Color(0xFF1F2937),
               fontSize: 16,
             ),
           ),
@@ -511,7 +511,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
                                         ? detection.typeLabel
                                         : '${detection.typeLabel} OFF',
                                     style: TextStyle(
-                                      color: Colors.white,
+                                      color: Color(0xFF1F2937),
                                       fontSize: labelSize,
                                       fontWeight: FontWeight.bold,
                                     ),
@@ -553,7 +553,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
         vertical: 16,
       ),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: Color(0xFFF7FAFC),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
@@ -563,8 +563,8 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
                 ? Icons.warning_amber_rounded
                 : Icons.check_circle_outline,
             color: _totalCount > 0
-                ? const Color(0xFFFF6B6B)
-                : const Color(0xFF43E97B),
+                ? const Color(0xFF8FC9F7)
+                : const Color(0xFF7DD3C7),
             size: 32,
           ),
           const SizedBox(width: 14),
@@ -575,7 +575,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
                 Text(
                   _totalCount > 0 ? '총 $_totalCount개 발견' : '개인정보가 발견되지 않았어요',
                   style: const TextStyle(
-                    color: Colors.white,
+                    color: Color(0xFF1F2937),
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                   ),
@@ -606,7 +606,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
           width: 18,
           height: 18,
           child: CircularProgressIndicator(
-            color: Colors.white,
+            color: Color(0xFF1F2937),
             strokeWidth: 2,
           ),
         )
@@ -619,8 +619,8 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
               : 'API 탐지 시작 (카드 · 운송장)',
         ),
         style: ElevatedButton.styleFrom(
-          backgroundColor: const Color(0xFF2D2D2D),
-          foregroundColor: Colors.white,
+          backgroundColor: const Color(0xFFDCEFF8),
+          foregroundColor: const Color(0xFF1F2937),
           padding: const EdgeInsets.symmetric(
             vertical: 14,
           ),
@@ -639,7 +639,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
         const Text(
           '탐지 항목',
           style: TextStyle(
-            color: Colors.white,
+            color: Color(0xFF1F2937),
             fontWeight: FontWeight.bold,
             fontSize: 14,
           ),
@@ -669,7 +669,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
           final enabled = _ocrEnabled[index] ?? true;
 
           return _buildItemTile(
-            color: const Color(0xFFFF6B6B),
+            color: Color(0xFF8FC9F7),
             label: detection.privacyTexts.isNotEmpty
                 ? _displayPrivacyText(detection.privacyTexts.first)
                 : 'OCR #${index + 1}',
@@ -701,8 +701,8 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
           child: ElevatedButton(
             onPressed: _goToEditor,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF6C63FF),
-              foregroundColor: Colors.white,
+              backgroundColor: const Color(0xFF8FC9F7),
+              foregroundColor: const Color(0xFF1F2937),
               padding: const EdgeInsets.symmetric(
                 vertical: 16,
               ),
@@ -750,12 +750,12 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
           vertical: 10,
         ),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: Color(0xFFF7FAFC),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: enabled
                 ? color.withValues(alpha: 0.4)
-                : const Color(0xFF2D2D2D),
+                : const Color(0xFFDCEFF8),
           ),
         ),
         child: Row(
@@ -764,7 +764,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
               width: 10,
               height: 10,
               decoration: BoxDecoration(
-                color: enabled ? color : const Color(0xFF444444),
+                color: enabled ? color : const Color(0xFFBFE4F5),
                 shape: BoxShape.circle,
               ),
             ),
@@ -776,7 +776,7 @@ class _DetectionSummaryScreenState extends State<DetectionSummaryScreen> {
                   Text(
                     label,
                     style: TextStyle(
-                      color: enabled ? Colors.white : const Color(0xFF555555),
+                      color: enabled ? Colors.white : const Color(0xFF6B7280),
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),
@@ -833,11 +833,11 @@ class _OcrPolygonPainter extends CustomPainter {
       final enabled = enabledMap[i] ?? true;
 
       final color = enabled
-          ? const Color(0xFFFF6B6B)
-          : const Color(0xFFFF6B6B).withValues(alpha: 0.25);
+          ? const Color(0xFF8FC9F7)
+          : const Color(0xFF8FC9F7).withValues(alpha: 0.25);
 
       final fillColor = enabled
-          ? const Color(0xFFFF6B6B).withValues(alpha: 0.15)
+          ? const Color(0xFF8FC9F7).withValues(alpha: 0.15)
           : Colors.transparent;
 
       final boxPaint = Paint()

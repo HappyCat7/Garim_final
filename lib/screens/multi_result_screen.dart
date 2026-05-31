@@ -27,13 +27,13 @@ class _MultiResultScreenState extends State<MultiResultScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
+      backgroundColor: const Color(0xFFFFFFFF),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F0F0F),
-        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xFFFFFFFF),
+        foregroundColor: const Color(0xFF1F2937),
         title: Text(
           '${_currentIndex + 1} / ${widget.imageFiles.length}',
-          style: const TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF1F2937)),
         ),
         elevation: 0,
       ),

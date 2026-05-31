@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -15,6 +16,22 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final ImagePicker _picker = ImagePicker();
   bool _isLoading = false;
+  bool _autoPickerStarted = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // 스플래시가 끝난 직후 바로 갤러리가 뜨면 너무 급하게 느껴지므로
+    // 약 0.6초 동안 첫 화면을 유지한 뒤 사진 선택 화면을 연다.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (!mounted || _autoPickerStarted) return;
+        _autoPickerStarted = true;
+        _pickImage();
+      });
+    });
+  }
 
   // [Req 6] 단일 사진만 선택 — pickImage (pickMultiImage 완전 제거)
   Future<void> _pickImage() async {
@@ -39,7 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
+      backgroundColor: const Color(0xFFFFFFFF),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -49,17 +66,22 @@ class _HomeScreenState extends State<HomeScreen> {
               Container(
                 width: 80, height: 80,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
+                  color: Color(0xFFF7FAFC),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFF3D3D3D)),
+                  border: Border.all(color: Color(0xFFBFE4F5)),
                 ),
-                child: const Icon(Icons.shield_outlined,
-                    color: Color(0xFF6C63FF), size: 40),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Image.asset(
+                    'assets/splash_logo.png',
+                    fit: BoxFit.contain,
+                  ),
+                ),
               ),
               const SizedBox(height: 24),
               const Text('가림',
                   style: TextStyle(
-                      color: Colors.white,
+                      color: Color(0xFF1F2937),
                       fontSize: 32,
                       fontWeight: FontWeight.bold,
                       letterSpacing: 4)),
@@ -69,13 +91,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   textAlign: TextAlign.center),
               const SizedBox(height: 48),
               _buildFeatureCard(Icons.face_outlined, '얼굴 탐지',
-                  '사진 속 얼굴을 자동으로 찾아 블러처리', const Color(0xFFFF6B6B)),
+                  '사진 속 얼굴을 자동으로 찾아 블러처리', const Color(0xFF8FC9F7)),
               const SizedBox(height: 12),
               _buildFeatureCard(Icons.directions_car_outlined, '번호판 탐지',
-                  '차량 번호판을 인식하여 블러처리', const Color(0xFF6C63FF)),
+                  '차량 번호판을 인식하여 블러처리', const Color(0xFF8FC9F7)),
               const SizedBox(height: 12),
               _buildFeatureCard(Icons.document_scanner_outlined, '문서 탐지',
-                  '문서 내 개인정보를 탐지하여 블러처리', const Color(0xFF43E97B)),
+                  '문서 내 개인정보를 탐지하여 블러처리', const Color(0xFF7DD3C7)),
               const Spacer(),
               SizedBox(
                 width: double.infinity,
@@ -83,7 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ElevatedButton(
                   onPressed: _isLoading ? null : _pickImage,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
+                    backgroundColor: const Color(0xFF8FC9F7),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16)),
@@ -120,9 +142,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: Color(0xFFF7FAFC),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF2D2D2D)),
+        border: Border.all(color: Color(0xFFDCEFF8)),
       ),
       child: Row(
         children: [
@@ -141,7 +163,7 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Text(title,
                     style: const TextStyle(
-                        color: Colors.white,
+                        color: Color(0xFF1F2937),
                         fontSize: 14,
                         fontWeight: FontWeight.w600)),
                 const SizedBox(height: 2),

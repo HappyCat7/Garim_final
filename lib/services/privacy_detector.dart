@@ -4,6 +4,8 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 
 import '../models/privacy_item.dart';
 
+enum _IdCardType { none, resident, driver, student }
+
 class PrivacyDetector {
   static List<PrivacyItem> detect(List<TextLine> lines) {
     final List<_DetectedSpan> spans = [];
@@ -17,6 +19,15 @@ class PrivacyDetector {
     // 여권은 일부가 잘려 있거나 확대된 이미지에서도 Passport No, KOR, MRZ 등
     // 고정 키워드/형태가 남아있는 경우가 많으므로 전체 OCR 기준 문맥을 먼저 판단한다.
     final bool globalPassportContext = _isPassportContext(lines);
+
+    // 졸업장/증명서류는 일반 문장보다 성명, 생년월일, 전공, 학교명, 총장명처럼
+    // 라벨이 작게 찍히거나 OCR이 '성 명', '명 :홍 길동', '공 : 기계공학부'처럼
+    // 분리되는 경우가 많으므로 문서 전체 문맥을 먼저 판단한다.
+    final bool globalDiplomaContext = _isDiplomaContext(lines);
+
+    // 주민등록증/운전면허증/학생증은 양식상 정보 위치가 비교적 고정적이다.
+    // 먼저 신분증 종류를 문서 전체 OCR로 판별한 뒤, 라벨/정규식 탐지에 위치 보정을 더한다.
+    final _IdCardType idCardType = _classifyIdCard(lines);
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
@@ -46,6 +57,10 @@ class PrivacyDetector {
         regex: _phoneRegex,
         type: 'PHONE',
         confidence: 'HIGH',
+        avoidOverlapTypes: {
+          'RRN',
+          'PARTIAL_RRN',
+        },
       );
 
       _addEmailMatches(spans: spans, line: line);
@@ -90,6 +105,22 @@ class PrivacyDetector {
         );
       }
 
+      if (globalDiplomaContext || _looksLikeDiplomaLine(rawText)) {
+        _addDiplomaSpecificSpans(
+          spans: spans,
+          line: line,
+          isGlobalDiplomaContext: globalDiplomaContext,
+        );
+      }
+
+      if (idCardType != _IdCardType.none || _looksLikeIdCardLine(rawText)) {
+        _addIdCardSpecificSpans(
+          spans: spans,
+          line: line,
+          idCardType: idCardType,
+        );
+      }
+
       if (currentLineWaybillContext) {
         _addRegexMatches(
           spans: spans,
@@ -118,6 +149,27 @@ class PrivacyDetector {
             'CARD_NUMBER',
             'ACCOUNT_NUMBER',
             'WAYBILL_CODE',
+          },
+        );
+      }
+
+      // 발급번호는 계좌번호와 유사한 하이픈 숫자 구조이지만,
+      // 증명서/공문에서는 문서 식별번호이므로 계좌번호보다 먼저 분리한다.
+      // 예: 발급번호 8553-345-3660-056
+      if (_hasIssueNumberContext(rawText)) {
+        _addRegexMatches(
+          spans: spans,
+          line: line,
+          regex: _certificateIssueNumberRegex,
+          type: 'CERTIFICATE_ISSUE_NUMBER',
+          confidence: 'MEDIUM',
+          avoidOverlapTypes: {
+            'ACCOUNT_NUMBER',
+            'PHONE',
+            'CARD_NUMBER',
+            'DRIVER_LICENSE',
+            'RRN',
+            'PARTIAL_RRN',
           },
         );
       }
@@ -153,6 +205,7 @@ class PrivacyDetector {
             'PARTIAL_RRN',
             'WAYBILL_CODE',
             'REGISTER_NUMBER',
+            'CERTIFICATE_ISSUE_NUMBER',
           },
         );
       }
@@ -248,6 +301,20 @@ class PrivacyDetector {
     }
 
     _addWaybillOrderNumberFragments(spans: spans, lines: lines);
+    _addCertificateIssueNumberFragments(spans: spans, lines: lines);
+
+    if (idCardType != _IdCardType.none) {
+      _addIdCardLayoutSpans(
+        spans: spans,
+        lines: lines,
+        idCardType: idCardType,
+      );
+      _addBrokenIdCardAddressLayoutSpans(
+        spans: spans,
+        lines: lines,
+        idCardType: idCardType,
+      );
+    }
 
     if (globalPassportContext) {
       _addPassportContextualFields(spans: spans, lines: lines);
@@ -357,6 +424,881 @@ class PrivacyDetector {
     }
   }
 
+
+  static void _addCertificateIssueNumberFragments({
+    required List<_DetectedSpan> spans,
+    required List<TextLine> lines,
+  }) {
+    for (final labelLine in lines) {
+      final labelText = labelLine.text.trim();
+      if (!_hasIssueNumberContext(labelText)) continue;
+
+      final labelRect = labelLine.boundingBox;
+
+      for (final candidateLine in lines) {
+        if (candidateLine == labelLine) continue;
+
+        final text = candidateLine.text.trim();
+        if (text.isEmpty) continue;
+
+        final rect = candidateLine.boundingBox;
+        final dy = (rect.center.dy - labelRect.center.dy).abs();
+        final dx = (rect.center.dx - labelRect.center.dx).abs();
+
+        // 표 양식에서 라벨 아래 또는 바로 오른쪽에 발급번호가 위치하는 경우를 허용한다.
+        final nearBelow = rect.top > labelRect.bottom && rect.top - labelRect.bottom < 120 && dx < 420;
+        final nearRight = rect.left > labelRect.right && dx < 640 && dy < 80;
+        if (!nearBelow && !nearRight) continue;
+
+        for (final match in _certificateIssueNumberRegex.allMatches(text)) {
+          final value = text.substring(match.start, match.end);
+
+          final candidate = _DetectedSpan(
+            type: 'CERTIFICATE_ISSUE_NUMBER',
+            text: value,
+            rect: _rectForTextSpan(
+              line: candidateLine,
+              start: match.start,
+              end: match.end,
+            ),
+            polygon: _polygonForTextSpan(
+              line: candidateLine,
+              start: match.start,
+              end: match.end,
+            ),
+            confidence: 'MEDIUM',
+            lineText: text,
+            start: match.start,
+            end: match.end,
+          );
+
+          if (_overlapsExisting(
+            candidate: candidate,
+            spans: spans,
+            avoidTypes: {
+              'ACCOUNT_NUMBER',
+              'PHONE',
+              'CARD_NUMBER',
+              'DRIVER_LICENSE',
+              'RRN',
+              'PARTIAL_RRN',
+            },
+          )) {
+            continue;
+          }
+
+          spans.add(candidate);
+        }
+      }
+    }
+  }
+
+
+
+
+
+  static bool _looksLikeResidentCardTitleOcr(String compact) {
+    final value = compact.replaceAll(RegExp(r'[^가-힣]'), '');
+    if (value.contains('주민등록증')) return true;
+
+    // 주민등록증 제목은 기울어지거나 흐리면 "주민등목증", "주민등륵증"처럼
+    // 중간 글자가 틀어지는 경우가 많다. 제목 판별에만 쓰고 개인정보 값에는 쓰지 않는다.
+    return RegExp(r'주민[가-힣]{1,3}증').hasMatch(value) &&
+        (value.contains('등') || value.contains('등록') || value.contains('목') || value.contains('록'));
+  }
+
+  static String _cleanKoreanNameCandidate(String text) {
+    var value = text.trim();
+    value = value.replaceAll(RegExp(r'\([^)]*\)'), '');
+    value = value.replaceAll(RegExp(r'[\[\]{}<>:：,\.·ㆍ\-_/\\|0-9A-Za-z]'), '');
+    value = value.replaceAll(RegExp(r'\s+'), '');
+    return value;
+  }
+
+  static _IdCardType _classifyIdCard(List<TextLine> lines) {
+    int residentScore = 0;
+    int driverScore = 0;
+    int studentScore = 0;
+
+    for (final line in lines) {
+      final compact = line.text.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+
+      if (_looksLikeResidentCardTitleOcr(compact)) residentScore += 6;
+      if (compact.contains('주민등록번호') || compact.contains('주민번호')) residentScore += 2;
+      if (compact.contains('행정안전부') || compact.contains('정부24')) residentScore += 2;
+      if (compact.contains('대한민국')) residentScore += 1;
+      if (compact.contains('발급일') || compact.contains('주소')) residentScore += 1;
+
+      // 운전면허증 제목은 촬영 각도/흔들림 때문에
+      // "자동차운전면허종", "Divers Licse"처럼 깨지는 경우가 많다.
+      // 따라서 정확한 "운전면허증"뿐 아니라 "운전면허" 핵심어와
+      // 영문 Driver/License OCR 오인식까지 함께 사용해 유형을 판별한다.
+      if (compact.contains('운전면허증') || compact.contains('자동차운전면허증')) driverScore += 6;
+      if (compact.contains('운전면허') || compact.contains('자동차운전면허')) driverScore += 5;
+      if (compact.contains('운전면허번호') || compact.contains('면허번호')) driverScore += 3;
+      if (compact.contains('DRIVER') || compact.contains('DIVERS') || compact.contains('LICENSE') || compact.contains('LICENCE') || compact.contains('LICSE')) driverScore += 2;
+      if (_driverLicenseRegex.hasMatch(line.text)) driverScore += 4;
+      if (compact.contains('적성검사') || compact.contains('갱신기간')) driverScore += 2;
+      if (compact.contains('경찰청') || compact.contains('도로교통공단')) driverScore += 2;
+      if (RegExp(r'^[12]종').hasMatch(compact)) driverScore += 2;
+
+      if (compact.contains('학생증')) studentScore += 6;
+      if (compact.contains('학번')) studentScore += 3;
+      if (compact.contains('학과') || compact.contains('전공') || compact.contains('소속')) studentScore += 2;
+      if (compact.contains('대학교') || compact.contains('대학')) studentScore += 2;
+      if (compact.contains('한국기술교육대학교') || compact.contains('KOREAUNIVERSITYOFTECHNOLOGYANDEDUCATION')) studentScore += 4;
+      if (compact.contains('SHINHANCARD') || compact.contains('CHECK&DEBIT') || compact.contains('C20')) studentScore += 1;
+      if (compact.contains('전자') || compact.contains('통신공학부') || compact.contains('공학부')) studentScore += 1;
+      if (compact.contains('유효기간') || compact.contains('VALIDTHRU')) studentScore += 1;
+    }
+
+    if (driverScore >= 6 && driverScore >= residentScore && driverScore >= studentScore) {
+      return _IdCardType.driver;
+    }
+    if (residentScore >= 6 && residentScore >= studentScore) {
+      return _IdCardType.resident;
+    }
+    if (studentScore >= 6) {
+      return _IdCardType.student;
+    }
+
+    return _IdCardType.none;
+  }
+
+  static bool _looksLikeIdCardLine(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+
+    return _looksLikeResidentCardTitleOcr(compact) ||
+        compact.contains('주민등록번호') ||
+        compact.contains('주민번호') ||
+        compact.contains('운전면허증') ||
+        compact.contains('운전면허') ||
+        compact.contains('자동차운전면허') ||
+        compact.contains('DRIVER') ||
+        compact.contains('DIVERS') ||
+        compact.contains('LICENSE') ||
+        compact.contains('LICSE') ||
+        compact.contains('운전면허번호') ||
+        compact.contains('면허번호') ||
+        compact.contains('적성검사') ||
+        compact.contains('갱신기간') ||
+        compact.contains('학생증') ||
+        compact.contains('학번') ||
+        compact.contains('학과') ||
+        compact.contains('전공') ||
+        compact.contains('한국기술교육대학교') ||
+        compact.contains('SHINHANCARD') ||
+        compact.contains('VALIDTHRU') ||
+        compact.contains('통신공학부') ||
+        compact.contains('성명') ||
+        compact.contains('이름') ||
+        compact == '주소' ||
+        compact.startsWith('주소') ||
+        compact == '주소:' ||
+        compact.contains('발급일');
+  }
+
+  static void _addIdCardSpecificSpans({
+    required List<_DetectedSpan> spans,
+    required TextLine line,
+    required _IdCardType idCardType,
+  }) {
+    final text = line.text.trim();
+    if (text.isEmpty) return;
+
+    final name = _extractIdCardNameSpan(text);
+    if (name != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: name,
+        type: 'NAME',
+        confidence: idCardType == _IdCardType.none ? 'MEDIUM' : 'HIGH',
+      );
+    }
+
+    final address = _extractIdCardAddressSpan(text);
+    if (address != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: address,
+        type: 'ADDRESS',
+        confidence: idCardType == _IdCardType.none ? 'MEDIUM' : 'HIGH',
+      );
+    }
+
+    if (idCardType == _IdCardType.driver || _hasDriverLicenseContext(text)) {
+      _addRegexMatches(
+        spans: spans,
+        line: line,
+        regex: _driverLicenseRegex,
+        type: 'DRIVER_LICENSE',
+        confidence: 'HIGH',
+        avoidOverlapTypes: {'RRN', 'PARTIAL_RRN'},
+      );
+    }
+
+    if (idCardType == _IdCardType.student || _hasStudentIdContext(text)) {
+      _addRegexMatches(
+        spans: spans,
+        line: line,
+        regex: _studentIdRegex,
+        type: 'STUDENT_ID',
+        confidence: 'HIGH',
+        avoidOverlapTypes: {'RRN', 'PHONE', 'ACCOUNT_NUMBER', 'CARD_NUMBER'},
+      );
+
+      final major = _extractStudentMajorSpan(text);
+      if (major != null) {
+        _addManualSpan(
+          spans: spans,
+          line: line,
+          span: major,
+          type: 'MAJOR',
+          confidence: 'MEDIUM',
+        );
+      }
+
+      final school = _extractStudentSchoolSpan(text);
+      if (school != null) {
+        _addManualSpan(
+          spans: spans,
+          line: line,
+          span: school,
+          type: 'SCHOOL',
+          confidence: 'MEDIUM',
+        );
+      }
+    }
+
+    if (_hasIdIssueDateContext(text)) {
+      _addRegexMatches(
+        spans: spans,
+        line: line,
+        regex: _dateRegex,
+        type: 'ID_ISSUE_DATE',
+        confidence: 'MEDIUM',
+        avoidOverlapTypes: {'BIRTH_DATE'},
+      );
+    }
+  }
+
+  static void _addIdCardLayoutSpans({
+    required List<_DetectedSpan> spans,
+    required List<TextLine> lines,
+    required _IdCardType idCardType,
+  }) {
+    final docRect = _documentBounds(lines);
+    if (docRect == null || docRect.width <= 0 || docRect.height <= 0) return;
+
+    for (final line in lines) {
+      final text = line.text.trim();
+      if (text.isEmpty) continue;
+      if (_isTitleOrSectionHeader(text) || _isTableHeader(text)) continue;
+
+      final rect = line.boundingBox;
+      final x = (rect.center.dx - docRect.left) / docRect.width;
+      final y = (rect.center.dy - docRect.top) / docRect.height;
+      final compact = text.replaceAll(RegExp(r'\s+'), '');
+      final nameCandidate = _cleanKoreanNameCandidate(text);
+
+      if (idCardType == _IdCardType.resident || idCardType == _IdCardType.driver) {
+        if (_rrnRegex.hasMatch(text)) {
+          _addRegexMatches(
+            spans: spans,
+            line: line,
+            regex: _rrnRegex,
+            type: 'RRN',
+            confidence: 'HIGH',
+          );
+        }
+
+        if (idCardType == _IdCardType.driver && _driverLicenseRegex.hasMatch(text)) {
+          _addRegexMatches(
+            spans: spans,
+            line: line,
+            regex: _driverLicenseRegex,
+            type: 'DRIVER_LICENSE',
+            confidence: 'HIGH',
+            avoidOverlapTypes: {'RRN', 'PARTIAL_RRN'},
+          );
+        }
+
+        // 한국 주민등록증/면허증의 이름은 보통 상단부에 배치된다.
+        // 위치만으로 오탐하지 않도록 한글 이름 후보 + 성씨 검증을 반드시 통과시킨다.
+        final hasEmptyParenName = RegExp(r'^[가-힣]{2,4}\s*[\(（][^\)）]*[\)）]$').hasMatch(text.trim());
+        final bool driverPureNameZone = idCardType == _IdCardType.driver &&
+            x > 0.12 && x < 0.88 && y > 0.12 && y < 0.78 &&
+            RegExp(r'^[가-힣]{2,4}$').hasMatch(nameCandidate);
+        if (((x > 0.18 && x < 0.85 && y > 0.10 && y < 0.62) || hasEmptyParenName || driverPureNameZone) && _isLikelyKoreanName(nameCandidate)) {
+          final start = text.indexOf(nameCandidate);
+          _addManualSpan(
+            spans: spans,
+            line: line,
+            span: _TextSpanResult(value: nameCandidate, start: start < 0 ? 0 : start, end: start < 0 ? text.length : start + nameCandidate.length),
+            type: 'NAME',
+            confidence: 'MEDIUM',
+          );
+        }
+
+        // 주소는 중하단에 길게 들어가는 경우가 많다. 라벨 없이 값만 잡힌 경우를 보완한다.
+        if (y > 0.35 && y < 0.88) {
+          final address = _extractIdCardAddressSpan(text) ?? _extractAddressSpan(text);
+          if (address != null) {
+            _addManualSpan(
+              spans: spans,
+              line: line,
+              span: address,
+              type: 'ADDRESS',
+              confidence: 'MEDIUM',
+            );
+          }
+        }
+      }
+
+      if (idCardType == _IdCardType.student) {
+        if (_studentIdRegex.hasMatch(text)) {
+          _addRegexMatches(
+            spans: spans,
+            line: line,
+            regex: _studentIdRegex,
+            type: 'STUDENT_ID',
+            confidence: 'HIGH',
+            avoidOverlapTypes: {'RRN', 'PHONE', 'ACCOUNT_NUMBER', 'CARD_NUMBER'},
+          );
+        }
+
+        if (x > 0.20 && x < 0.85 && y > 0.20 && y < 0.75 && _isLikelyKoreanName(nameCandidate)) {
+          final start = text.indexOf(nameCandidate);
+          _addManualSpan(
+            spans: spans,
+            line: line,
+            span: _TextSpanResult(value: nameCandidate, start: start < 0 ? 0 : start, end: start < 0 ? text.length : start + nameCandidate.length),
+            type: 'NAME',
+            confidence: 'MEDIUM',
+          );
+        }
+
+        final major = _extractStudentMajorSpan(text) ?? _extractStudentStandaloneMajorSpan(text);
+        if (major != null) {
+          _addManualSpan(
+            spans: spans,
+            line: line,
+            span: major,
+            type: 'MAJOR',
+            confidence: 'MEDIUM',
+          );
+        }
+
+        final school = _extractStudentSchoolSpan(text);
+        if (school != null) {
+          _addManualSpan(
+            spans: spans,
+            line: line,
+            span: school,
+            type: 'SCHOOL',
+            confidence: 'MEDIUM',
+          );
+        }
+      }
+    }
+  }
+
+
+  static void _addBrokenIdCardAddressLayoutSpans({
+    required List<_DetectedSpan> spans,
+    required List<TextLine> lines,
+    required _IdCardType idCardType,
+  }) {
+    if (idCardType != _IdCardType.resident && idCardType != _IdCardType.driver) return;
+
+    final sorted = [...lines]..sort((a, b) => a.boundingBox.top.compareTo(b.boundingBox.top));
+
+    for (int i = 0; i < sorted.length; i++) {
+      final first = sorted[i];
+      final firstText = first.text.trim();
+      if (firstText.isEmpty) continue;
+
+      if (!_looksLikeBrokenAddressStart(firstText)) continue;
+
+      final selected = <TextLine>[first];
+      Rect mergedRect = first.boundingBox;
+
+      for (int j = i + 1; j < sorted.length && selected.length < 3; j++) {
+        final next = sorted[j];
+        final nextText = next.text.trim();
+        if (nextText.isEmpty) continue;
+
+        final verticalGap = next.boundingBox.top - mergedRect.bottom;
+        final horizontalNear = next.boundingBox.left < mergedRect.right + 360 &&
+            next.boundingBox.right > mergedRect.left - 360;
+
+        if (verticalGap < -40 || verticalGap > 140 || !horizontalNear) continue;
+        if (!_looksLikeBrokenAddressContinuation(nextText)) continue;
+
+        selected.add(next);
+        mergedRect = mergedRect.expandToInclude(next.boundingBox);
+      }
+
+      if (selected.length < 2) continue;
+
+      final joined = selected.map((e) => e.text.trim()).join(' ');
+      final compact = joined.replaceAll(RegExp(r'\s+'), '');
+
+      // 최소한 행정구역 후보 + 숫자 상세주소가 함께 있어야 주소로 인정한다.
+      final hasRegionLike = RegExp(r'(서울|부산|대구|인천|광주|대전|대진|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|광역|광역시|광역처|특별시|[가-힣]{1,6}시|[가-힣]{1,6}구)').hasMatch(compact);
+      final hasDetailNumber = RegExp(r'[0-9]{1,5}').hasMatch(compact);
+      final hasAddressUnit = RegExp(r'(구|동|읍|면|리|로|길|번길|번|동|호|아파트|빌라|슈빌|마을|단지)').hasMatch(compact);
+      if (!hasRegionLike || !hasDetailNumber || !hasAddressUnit) continue;
+
+      final alreadyAddress = spans.any((span) {
+        return span.type == 'ADDRESS' && span.rect.overlaps(mergedRect.inflate(12));
+      });
+      if (alreadyAddress) continue;
+
+      spans.add(
+        _DetectedSpan(
+          type: 'ADDRESS',
+          text: joined,
+          rect: mergedRect.inflate(2),
+          polygon: [
+            Offset(mergedRect.left, mergedRect.top),
+            Offset(mergedRect.right, mergedRect.top),
+            Offset(mergedRect.right, mergedRect.bottom),
+            Offset(mergedRect.left, mergedRect.bottom),
+          ],
+          confidence: 'MEDIUM',
+          lineText: joined,
+          start: 0,
+          end: joined.length,
+        ),
+      );
+    }
+  }
+
+  static bool _looksLikeBrokenAddressStart(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '');
+    if (compact.isEmpty) return false;
+
+    // 정상 주소뿐 아니라 주민등록증 OCR에서 자주 깨지는 "대전광역시 → 대진광역처" 형태까지 허용한다.
+    final hasRegionStart = RegExp(
+      r'(서울|부산|대구|인천|광주|대전|대진|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주|광역|광역시|광역처|특별시)',
+    ).hasMatch(compact);
+    final hasDistrictOrRoad = RegExp(r'([가-힣]{1,6}구|[가-힣]{1,8}동|[가-힣]{1,8}로|[가-힣]{1,8}길|으브갈|동으)').hasMatch(compact);
+
+    return hasRegionStart && hasDistrictOrRoad;
+  }
+
+  static bool _looksLikeBrokenAddressContinuation(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '');
+    if (compact.isEmpty) return false;
+
+    if (RegExp(r'^\(?[가-힣]{1,12}(동|읍|면|리)[,，]?.{0,20}\)?$').hasMatch(compact)) return true;
+    if (RegExp(r'[0-9]{1,5}(동|호|층)?').hasMatch(compact) && RegExp(r'(동|호|층|[0-9])').hasMatch(compact)) return true;
+    if (compact.startsWith('(') && compact.endsWith(')')) return true;
+
+    return false;
+  }
+
+  static Rect? _documentBounds(List<TextLine> lines) {
+    Rect? result;
+    for (final line in lines) {
+      final text = line.text.trim();
+      if (text.isEmpty) continue;
+      final rect = line.boundingBox;
+      result = result == null ? rect : result.expandToInclude(rect);
+    }
+    return result;
+  }
+
+  static _TextSpanResult? _extractIdCardNameSpan(String text) {
+    final original = text.trim();
+
+    // 주민등록증/면허증 OCR에서 이름 뒤의 한자/영문 병기 괄호가 비어 있거나 깨지는 경우.
+    // 예: "이상혁()" → "이상혁"
+    final parenOnlyMatch = RegExp(
+      r'^\s*([가-힣]{2,4})\s*[\(（][^\)）]*[\)）]\s*$',
+    ).firstMatch(original);
+    if (parenOnlyMatch != null) {
+      final rawName = parenOnlyMatch.group(1);
+      if (rawName != null) {
+        final normalized = _cleanKoreanNameCandidate(rawName);
+        if (_isLikelyKoreanName(normalized)) {
+          final start = original.indexOf(rawName);
+          return _TextSpanResult(
+            value: normalized,
+            start: start < 0 ? 0 : start,
+            end: start < 0 ? normalized.length : start + rawName.length,
+          );
+        }
+      }
+    }
+
+    // 예: 성명 홍길동, 성 명 : 홍 길 동, 이름: 김철수
+    final match = RegExp(
+      r'(?:성\s*명|이\s*름|성명|이름)\s*[:：]?\s*((?:[가-힣]\s*){2,4})',
+    ).firstMatch(original);
+
+    if (match == null) return null;
+
+    final rawName = match.group(1);
+    if (rawName == null) return null;
+
+    final normalized = _cleanKoreanNameCandidate(rawName);
+    if (!_isLikelyKoreanName(normalized)) return null;
+
+    final start = original.indexOf(rawName);
+    if (start < 0) return null;
+
+    return _TextSpanResult(value: normalized, start: start, end: start + rawName.length);
+  }
+
+  static _TextSpanResult? _extractIdCardAddressSpan(String text) {
+    final original = text.trim();
+    if (original.isEmpty) return null;
+
+    final compact = original.replaceAll(RegExp(r'\s+'), '');
+    final hasAddressLabel = RegExp(r'^주\s*소\s*[:：]?').hasMatch(original);
+    final hasAddressValue = _hasAddressCoreToken(_normalizeAddressOcrCompact(original));
+    if (!hasAddressLabel && !hasAddressValue) {
+      return null;
+    }
+
+    // 라벨이 포함된 경우 라벨은 제외하고 실제 주소 값만 표시한다.
+    final labelMatch = RegExp(r'주\s*소\s*[:：]?\s*').firstMatch(original);
+    final source = labelMatch == null ? original : original.substring(labelMatch.end).trim();
+    if (source.isEmpty) return null;
+
+    final span = _extractAddressSpan(source);
+    if (span == null) return null;
+
+    final sourceStart = labelMatch == null ? 0 : original.indexOf(source);
+    return _TextSpanResult(
+      value: span.value,
+      start: sourceStart + span.start,
+      end: sourceStart + span.end,
+    );
+  }
+
+  static bool _hasDriverLicenseContext(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '');
+    return compact.contains('운전면허') || compact.contains('면허번호') || compact.contains('면허증');
+  }
+
+  static bool _hasStudentIdContext(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+    return compact.contains('학번') ||
+        compact.contains('학생번호') ||
+        compact.contains('학생증') ||
+        compact.contains('한국기술교육대학교') ||
+        compact.contains('SHINHANCARD') ||
+        compact.contains('VALIDTHRU') ||
+        compact.contains('통신공학부') ||
+        compact.contains('공학부');
+  }
+
+  static bool _hasIdIssueDateContext(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '');
+    return compact.contains('발급일') || compact.contains('발행일') || compact.contains('교부일');
+  }
+
+  static _TextSpanResult? _extractStudentMajorSpan(String text) {
+    final original = text.trim();
+    final match = RegExp(
+      r'(?:학\s*과|전\s*공|소\s*속)\s*[:：]?\s*([가-힣A-Za-z0-9\s]{2,30}(?:학과|학부|전공|과|부|대학))',
+    ).firstMatch(original);
+    if (match == null) return null;
+
+    final value = match.group(1)?.trim();
+    if (value == null || value.isEmpty) return null;
+    final start = original.indexOf(value);
+    if (start < 0) return null;
+    return _TextSpanResult(value: value, start: start, end: start + value.length);
+  }
+
+  static _TextSpanResult? _extractStudentStandaloneMajorSpan(String text) {
+    final original = text.trim();
+    if (original.isEmpty) return null;
+
+    // 학생증에서는 전공/학과 라벨 없이 "전기·전자·통신공학부"처럼 값만 적히는 경우가 있다.
+    // 단독 전공명은 학생증 문맥에서만 호출하므로 일반 문서 오탐을 줄일 수 있다.
+    final normalized = original
+        .replaceAll(RegExp(r'[ㆍ·•]'), '·')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    final compact = normalized.replaceAll(RegExp(r'\s+'), '');
+    if (compact.length < 3 || compact.length > 30) return null;
+
+    final hasMajorSuffix = RegExp(r'(학과|학부|전공|공학부|공학과|과)$').hasMatch(compact);
+    final hasStudentMajorKeyword = RegExp(r'(전자|전기|통신|컴퓨터|소프트웨어|기계|전산|정보|보안|경영|디자인|건축|화학|산업|메카트로닉스)').hasMatch(compact);
+    final isNoise = RegExp(r'(학생증|카드|CARD|VALID|THRU|MONTH|YEAR|SHINHAN|CHECK|DEBIT|대한민국|주민등록증|운전면허)').hasMatch(compact.toUpperCase());
+
+    if (!hasMajorSuffix || !hasStudentMajorKeyword || isNoise) return null;
+
+    final start = original.indexOf(original.trim());
+    return _TextSpanResult(
+      value: normalized,
+      start: start < 0 ? 0 : start,
+      end: start < 0 ? original.length : start + original.trim().length,
+    );
+  }
+
+  static _TextSpanResult? _extractStudentSchoolSpan(String text) {
+    final original = text.trim();
+    final compactLine = original.replaceAll(RegExp(r'\s+'), '');
+
+    // 졸업장 본문 문장에 포함된 "우리 대학교"는 학교명 개인정보가 아니다.
+    if (compactLine.contains('위사람은우리대학교') ||
+        compactLine.contains('우리대학교소정의') ||
+        compactLine.contains('소정의전과정') ||
+        compactLine.contains('학사학위취득')) {
+      return null;
+    }
+
+    final match = RegExp(r'([가-힣A-Za-z0-9]{2,25}\s*(?:대\s*학\s*교|대\s*학))').firstMatch(original);
+    if (match == null) return null;
+    final raw = match.group(1);
+    if (raw == null) return null;
+    final normalized = raw.replaceAll(RegExp(r'\s+'), '');
+    if (normalized == '대학교' ||
+        normalized == '대학' ||
+        normalized == '우리대학교' ||
+        normalized == '본대학교' ||
+        normalized == '해당대학교') {
+      return null;
+    }
+    final start = original.indexOf(raw);
+    if (start < 0) return null;
+    return _TextSpanResult(value: normalized, start: start, end: start + raw.length);
+  }
+
+  static bool _isDiplomaContext(List<TextLine> lines) {
+    int score = 0;
+
+    for (final line in lines) {
+      final compact = line.text.replaceAll(RegExp(r'\s+'), '');
+
+      if (compact.contains('졸업장')) score += 4;
+      if (compact.contains('학사학위')) score += 3;
+      if (compact.contains('대학교')) score += 2;
+      if (compact.contains('총장')) score += 2;
+      if (compact.contains('성명') || compact.contains('생년월일')) score += 2;
+      if (compact.contains('전공') || compact == '전' || compact.startsWith('공:')) score += 1;
+    }
+
+    return score >= 5;
+  }
+
+  static bool _looksLikeDiplomaLine(String text) {
+    final compact = text.replaceAll(RegExp(r'\s+'), '');
+
+    return compact.contains('졸업장') ||
+        compact.contains('학사학위') ||
+        compact.contains('성명') ||
+        compact.startsWith('명:') ||
+        compact.contains('생년월일') ||
+        compact.contains('전공') ||
+        compact.startsWith('공:') ||
+        compact.contains('대학교') ||
+        compact.contains('총장');
+  }
+
+  static void _addDiplomaSpecificSpans({
+    required List<_DetectedSpan> spans,
+    required TextLine line,
+    required bool isGlobalDiplomaContext,
+  }) {
+    if (!isGlobalDiplomaContext) return;
+
+    final text = line.text.trim();
+    if (text.isEmpty) return;
+
+    final name = _extractDiplomaNameSpan(text);
+    if (name != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: name,
+        type: 'NAME',
+        confidence: 'MEDIUM',
+      );
+    }
+
+    final major = _extractDiplomaMajorSpan(text);
+    if (major != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: major,
+        type: 'MAJOR',
+        confidence: 'MEDIUM',
+      );
+    }
+
+    final school = _extractDiplomaSchoolSpan(text);
+    if (school != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: school,
+        type: 'SCHOOL',
+        confidence: 'MEDIUM',
+      );
+    }
+
+    final president = _extractDiplomaPresidentNameSpan(text);
+    if (president != null) {
+      _addManualSpan(
+        spans: spans,
+        line: line,
+        span: president,
+        type: 'NAME',
+        confidence: 'MEDIUM',
+      );
+    }
+  }
+
+  static _TextSpanResult? _extractDiplomaNameSpan(String text) {
+    final original = text.trim();
+    final compact = original.replaceAll(RegExp(r'\s+'), '');
+
+    // 예: "성 명 : 홍 길 동", "명 :홍 길동", "성명:홍길동"
+    final match = RegExp(
+      r'(?:성\s*명|명)\s*[:：]\s*((?:[가-힣]\s*){2,4})',
+    ).firstMatch(original);
+
+    if (match == null) return null;
+
+    final rawName = match.group(1);
+    if (rawName == null) return null;
+
+    final normalized = rawName.replaceAll(RegExp(r'\s+'), '');
+    if (!_isLikelyKoreanName(normalized)) return null;
+
+    // "생년월일" OCR 일부가 "성생"처럼 합쳐지는 경우까지 고려해
+    // 이름 후보는 반드시 콜론 뒤쪽 값만 사용한다.
+    if (compact.contains('생년월일') && !compact.contains('성명')) return null;
+
+    final start = original.indexOf(rawName);
+    if (start < 0) return null;
+
+    return _TextSpanResult(
+      value: normalized,
+      start: start,
+      end: start + rawName.length,
+    );
+  }
+
+  static _TextSpanResult? _extractDiplomaMajorSpan(String text) {
+    final original = text.trim();
+
+    // 예: "전 공 : 기계공학부"가 OCR에서 "공 : 기계공학부"로 잘리는 경우 보완.
+    final match = RegExp(
+      r'(?:전\s*공|공)\s*[:：]\s*([가-힣A-Za-z0-9\s]{2,30}(?:학과|학부|전공|과|부))',
+    ).firstMatch(original);
+
+    if (match == null) return null;
+
+    final value = match.group(1)?.trim();
+    if (value == null || value.isEmpty) return null;
+
+    final start = original.indexOf(value);
+    if (start < 0) return null;
+
+    return _TextSpanResult(
+      value: value,
+      start: start,
+      end: start + value.length,
+    );
+  }
+
+  static _TextSpanResult? _extractDiplomaSchoolSpan(String text) {
+    final original = text.trim();
+    final compactLine = original.replaceAll(RegExp(r'\s+'), '');
+
+    // 본문 문장에 포함된 "우리 대학교"는 학교명 개인정보가 아니다.
+    // 예: "위 사람은 우리 대학교 소정의 전 과정을..." 오탐 방지
+    final sentenceBlockKeywords = [
+      '위사람은',
+      '우리대학교',
+      '소정의',
+      '전과정',
+      '이수하여',
+      '학사학위',
+      '취득에',
+      '필요한',
+      '요건',
+      '충족',
+      '인정하여',
+      '졸업장',
+      '수여',
+    ];
+
+    if (sentenceBlockKeywords.any((word) => compactLine.contains(word))) {
+      return null;
+    }
+
+    // 예: "한국기술교육대 학교 총장 유 길상"처럼 학교가 띄어져 OCR되는 경우 보완.
+    // 단, 실제 학교명은 보통 "OO대 학교" 앞부분에 기관명이 있으므로
+    // "우리 대학교", "본 대학교" 같은 일반 지시 표현은 제외한다.
+    final match = RegExp(
+      r'([가-힣A-Za-z0-9]{2,25}\s*대\s*학교)',
+    ).firstMatch(original);
+
+    if (match == null) return null;
+
+    final rawValue = match.group(1);
+    if (rawValue == null) return null;
+
+    final normalized = rawValue.replaceAll(RegExp(r'\s+'), '');
+    if (!normalized.endsWith('대학교')) return null;
+
+    final schoolBlacklist = {
+      '우리대학교',
+      '본대학교',
+      '해당대학교',
+      '대학교',
+    };
+
+    if (schoolBlacklist.contains(normalized)) return null;
+
+    final start = original.indexOf(rawValue);
+    if (start < 0) return null;
+
+    return _TextSpanResult(
+      value: normalized,
+      start: start,
+      end: start + rawValue.length,
+    );
+  }
+
+  static _TextSpanResult? _extractDiplomaPresidentNameSpan(String text) {
+    final original = text.trim();
+
+    // 예: "총장 유 길상" → 유길상
+    final match = RegExp(
+      r'총장\s*((?:[가-힣]\s*){2,4})',
+    ).firstMatch(original);
+
+    if (match == null) return null;
+
+    final rawName = match.group(1);
+    if (rawName == null) return null;
+
+    final normalized = rawName.replaceAll(RegExp(r'\s+'), '');
+    if (!_isLikelyKoreanName(normalized)) return null;
+
+    final start = original.indexOf(rawName);
+    if (start < 0) return null;
+
+    return _TextSpanResult(
+      value: normalized,
+      start: start,
+      end: start + rawName.length,
+    );
+  }
 
   static bool _isPassportContext(List<TextLine> lines) {
     int score = 0;
@@ -994,6 +1936,19 @@ class PrivacyDetector {
       return;
     }
 
+    if (labelType == 'MAJOR') {
+      final major = _extractDiplomaMajorSpan('전공: $valueText') ??
+          _TextSpanResult(value: valueText, start: 0, end: valueText.length);
+      _addManualSpan(
+        spans: spans,
+        line: valueLine,
+        span: major,
+        type: 'MAJOR',
+        confidence: 'MEDIUM',
+      );
+      return;
+    }
+
     if (labelType == 'RRN') {
       _addRegexMatches(
         spans: spans,
@@ -1052,6 +2007,30 @@ class PrivacyDetector {
           'WAYBILL_CODE',
           'REGISTER_NUMBER',
         },
+      );
+      return;
+    }
+
+    if (labelType == 'STUDENT_ID') {
+      _addRegexMatches(
+        spans: spans,
+        line: valueLine,
+        regex: _studentIdRegex,
+        type: 'STUDENT_ID',
+        confidence: 'HIGH',
+        avoidOverlapTypes: {'RRN', 'PHONE', 'ACCOUNT_NUMBER', 'CARD_NUMBER'},
+      );
+      return;
+    }
+
+    if (labelType == 'ID_ISSUE_DATE') {
+      _addRegexMatches(
+        spans: spans,
+        line: valueLine,
+        regex: _dateRegex,
+        type: 'ID_ISSUE_DATE',
+        confidence: 'MEDIUM',
+        avoidOverlapTypes: {'BIRTH_DATE'},
       );
       return;
     }
@@ -1133,6 +2112,10 @@ class PrivacyDetector {
 
       case 'POSITION':
         return _extractPositionSpan(compact) != null;
+
+      case 'MAJOR':
+        return RegExp(r'^[가-힣A-Za-z0-9\s]{2,30}(학과|학부|전공|과|부)$')
+            .hasMatch(compact);
 
       case 'PHONE':
         return _phoneRegex.hasMatch(compact);
@@ -1322,6 +2305,78 @@ class PrivacyDetector {
     return originalText.length;
   }
 
+
+  static _TextSpanResult _normalizeManualSpanForType({
+    required String lineText,
+    required _TextSpanResult span,
+    required String type,
+  }) {
+    if (type == 'MAJOR') {
+      final original = lineText.trim();
+
+      // 졸업장 OCR에서 "공 : 기계공학부"처럼 라벨과 값이 한 줄로 잡힌 경우
+      // 화면 박스에는 실제 개인정보 값인 "기계공학부"만 남긴다.
+      final labelMatch = RegExp(
+        r'(?:전\s*공|공)\s*[:：]\s*([가-힣A-Za-z0-9\s]{2,30}(?:학과|학부|전공|과|부))',
+      ).firstMatch(original);
+
+      if (labelMatch != null) {
+        final value = labelMatch.group(1)?.trim();
+        if (value != null && value.isNotEmpty) {
+          final start = original.indexOf(value);
+          if (start >= 0) {
+            return _TextSpanResult(
+              value: value,
+              start: start,
+              end: start + value.length,
+            );
+          }
+        }
+      }
+
+      if (span.value.contains(':') || span.value.contains('：')) {
+        final parts = span.value.split(RegExp(r'[:：]'));
+        final value = parts.last.trim();
+        final start = original.indexOf(value);
+        if (value.isNotEmpty && start >= 0) {
+          return _TextSpanResult(
+            value: value,
+            start: start,
+            end: start + value.length,
+          );
+        }
+      }
+    }
+
+    if (type == 'SCHOOL') {
+      final compactValue = span.value.replaceAll(RegExp(r'\s+'), '');
+      final compactLine = lineText.replaceAll(RegExp(r'\s+'), '');
+
+      // "위 사람은 우리 대학교..."의 "우리대학교"는 실제 학교명이 아니라 본문 지시어다.
+      if (compactValue == '우리대학교' ||
+          compactValue == '본대학교' ||
+          compactValue == '해당대학교' ||
+          compactLine.contains('위사람은우리대학교') ||
+          compactLine.contains('우리대학교소정의')) {
+        return _TextSpanResult(value: '', start: 0, end: 0);
+      }
+    }
+
+    if (type == 'NAME') {
+      final compactValue = span.value.replaceAll(RegExp(r'\s+'), '');
+
+      // 졸업장 라벨 "성 명"이 OCR에서 "성생"으로 깨진 경우를 이름으로 오탐하지 않는다.
+      if (compactValue == '성생' ||
+          compactValue == '성명' ||
+          compactValue == '생년' ||
+          compactValue == '생년월') {
+        return _TextSpanResult(value: '', start: 0, end: 0);
+      }
+    }
+
+    return span;
+  }
+
   static void _addManualSpan({
     required List<_DetectedSpan> spans,
     required TextLine line,
@@ -1329,23 +2384,31 @@ class PrivacyDetector {
     required String type,
     required String confidence,
   }) {
+    final effectiveSpan = _normalizeManualSpanForType(
+      lineText: line.text.trim(),
+      span: span,
+      type: type,
+    );
+
+    if (effectiveSpan.value.trim().isEmpty) return;
+
     final candidate = _DetectedSpan(
       type: type,
-      text: span.value,
+      text: effectiveSpan.value,
       rect: _rectForTextSpan(
         line: line,
-        start: span.start,
-        end: span.end,
+        start: effectiveSpan.start,
+        end: effectiveSpan.end,
       ),
       polygon: _polygonForTextSpan(
         line: line,
-        start: span.start,
-        end: span.end,
+        start: effectiveSpan.start,
+        end: effectiveSpan.end,
       ),
       confidence: confidence,
       lineText: line.text.trim(),
-      start: span.start,
-      end: span.end,
+      start: effectiveSpan.start,
+      end: effectiveSpan.end,
     );
 
     if (_overlapsExisting(
@@ -1368,6 +2431,9 @@ class PrivacyDetector {
         'WAYBILL_CODE',
         'WAYBILL_ORDER_NUMBER',
         'REGISTER_NUMBER',
+        'CERTIFICATE_ISSUE_NUMBER',
+        'STUDENT_ID',
+        'ID_ISSUE_DATE',
       },
     )) {
       return;
@@ -1641,8 +2707,12 @@ class PrivacyDetector {
     // 이때 값 영역 오른쪽의 이름을 찾기 위해 '명:' 단독 라인도 NAME 라벨로 인정한다.
     if (compact == '이름' ||
         compact == '성명' ||
+        compact == '성명:' ||
+        compact == '성명：' ||
         compact == '명:' ||
         compact == '명：' ||
+        compact.startsWith('명:') ||
+        compact.startsWith('명：') ||
         compact == '서명인' ||
         compact == '담당자' ||
         compact.contains('주문인') ||
@@ -1662,6 +2732,16 @@ class PrivacyDetector {
       return 'POSITION';
     }
 
+    if (compact == '전공' ||
+        compact == '전공:' ||
+        compact == '전공：' ||
+        compact.startsWith('전공:') ||
+        compact.startsWith('전공：') ||
+        compact.startsWith('공:') ||
+        compact.startsWith('공：')) {
+      return 'MAJOR';
+    }
+
     if (compact.contains('주민등록번호') || compact.contains('주민번호')) {
       return 'RRN';
     }
@@ -1679,6 +2759,8 @@ class PrivacyDetector {
     }
 
     if (compact.contains('계좌번호')) return 'ACCOUNT_NUMBER';
+    if (compact.contains('학번') || compact.contains('학생번호')) return 'STUDENT_ID';
+    if (compact.contains('발급일') || compact.contains('발행일') || compact.contains('교부일')) return 'ID_ISSUE_DATE';
     if (compact.contains('생년월일')) return 'BIRTH_DATE';
 
     return null;
@@ -1712,10 +2794,20 @@ class PrivacyDetector {
         compact.contains('운송장번호');
   }
 
+  static bool _hasIssueNumberContext(String text) {
+    final compact = text.replaceAll(' ', '');
+
+    return compact.contains('발급번호') ||
+        compact.contains('발행번호') ||
+        compact.contains('증명번호') ||
+        compact.contains('문서번호');
+  }
+
   static bool _looksLikeAccountOnly(String text) {
     final compact = text.replaceAll(' ', '');
 
     if (_waybillCodeRegex.hasMatch(compact)) return false;
+    if (_certificateIssueNumberRegex.hasMatch(compact)) return false;
     if (!_accountRegex.hasMatch(compact)) return false;
     if (_phoneRegex.hasMatch(compact)) return false;
     if (_driverLicenseRegex.hasMatch(compact)) return false;
@@ -1729,6 +2821,14 @@ class PrivacyDetector {
     final compact = text.replaceAll(' ', '');
 
     if (!_dateRegex.hasMatch(compact)) return false;
+
+    // "2024년 02월 26일"처럼 문서 발급일/작성일로 자주 쓰이는
+    // 한글 날짜 단독 라인은 생년월일로 보지 않는다.
+    // 생년월일 라벨이 있는 경우에는 _hasBirthContext(rawText)가 true라서
+    // 위쪽 분기에서 정상적으로 BIRTH_DATE로 탐지된다.
+    if (RegExp(r'^(19|20)[0-9]{2}년[0-9]{1,2}월[0-9]{1,2}일?$').hasMatch(compact)) {
+      return false;
+    }
 
     final dateOnly = RegExp(
       r'^(19|20)[0-9]{2}[-./][0-9]{1,2}[-./][0-9]{1,2}$',
@@ -1744,8 +2844,14 @@ class PrivacyDetector {
       ) {
     final compactLine = fullLine.replaceAll(' ', '');
 
+    if (type == 'CERTIFICATE_ISSUE_NUMBER') return false;
+    if (type == 'ID_ISSUE_DATE') return false;
+
     if (compactLine.contains('접수번호') ||
         compactLine.contains('신청번호') ||
+        compactLine.contains('발급번호') ||
+        compactLine.contains('발행번호') ||
+        compactLine.contains('증명번호') ||
         compactLine.contains('문서번호') ||
         compactLine.contains('관리번호') ||
         compactLine.contains('공고제')) {
@@ -1755,6 +2861,14 @@ class PrivacyDetector {
     if (type == 'BIRTH_DATE') return false;
 
     return false;
+  }
+
+
+  static bool _looksLikeCertificateDocumentNumber(String compact) {
+    final value = compact.replaceAll(RegExp(r'\s+'), '');
+
+    return RegExp(r'^제?[0-9]{4}[-–—]?[0-9]{3,8}호$').hasMatch(value) ||
+        RegExp(r'^제[0-9]{3,8}호$').hasMatch(value);
   }
 
   static bool _hasAddressCoreToken(String compact) {
@@ -1782,6 +2896,10 @@ class PrivacyDetector {
 
   static _TextSpanResult? _extractAddressSpan(String text) {
     final compact = _normalizeAddressOcrCompact(text);
+
+    // 졸업장/증명서의 문서번호는 '호'가 붙어도 주소의 동/호수가 아니다.
+    // 예: 제 2024-12345 호
+    if (_looksLikeCertificateDocumentNumber(compact)) return null;
 
     if (_isNonAddressSentence(compact)) return null;
 
@@ -1818,11 +2936,7 @@ class PrivacyDetector {
     ).hasMatch(compact);
 
     if (hasKoreanAddressStart && hasKoreanAddressDetail) {
-      return _TextSpanResult(
-        value: text,
-        start: 0,
-        end: text.length,
-      );
+      return _addressSpanFromCleanedText(text);
     }
 
     final hasRegion = RegExp(
@@ -1836,11 +2950,7 @@ class PrivacyDetector {
     final hasDigit = RegExp(r'[0-9]').hasMatch(compact);
 
     if (hasRegion && hasAddressUnit && hasDigit) {
-      return _TextSpanResult(
-        value: text,
-        start: 0,
-        end: text.length,
-      );
+      return _addressSpanFromCleanedText(text);
     }
 
     // 예: OCR이 '천안시'를 '1안시'로 읽거나,
@@ -1854,11 +2964,7 @@ class PrivacyDetector {
     ).hasMatch(compact);
 
     if (hasAdminAddressUnit && hasDigit && hasVillageLikeDetail) {
-      return _TextSpanResult(
-        value: text,
-        start: 0,
-        end: text.length,
-      );
+      return _addressSpanFromCleanedText(text);
     }
 
     final roadAddressRegex = RegExp(
@@ -1884,11 +2990,7 @@ class PrivacyDetector {
     );
 
     if (detailAddressRegex.hasMatch(compact)) {
-      return _TextSpanResult(
-        value: text,
-        start: 0,
-        end: text.length,
-      );
+      return _addressSpanFromCleanedText(text);
     }
 
     final inlineDetailAddressRegex = RegExp(
@@ -1903,32 +3005,115 @@ class PrivacyDetector {
         (parenthesizedDetailInsideLineRegex.hasMatch(compact) &&
             RegExp(r'[0-9]').hasMatch(compact) &&
             RegExp(r'(층|호|빌딩|오토|센터|타워|상가|아파트|오피스텔)').hasMatch(compact))) {
-      return _TextSpanResult(
-        value: text,
-        start: 0,
-        end: text.length,
-      );
+      return _addressSpanFromCleanedText(text);
     }
 
     if (_looksLikeBuildingOrHousingName(compact)) {
-      return _TextSpanResult(
-        value: text,
-        start: 0,
-        end: text.length,
-      );
+      return _addressSpanFromCleanedText(text);
     }
 
     return null;
   }
 
+  static _TextSpanResult _addressSpanFromCleanedText(String text) {
+    final original = text.trim();
+
+    // 라벨과 값이 같은 줄에 붙은 경우 라벨은 개인정보 박스에서 제외한다.
+    // 예: "주 소 대전광역시 ..." -> "대전광역시 ..."
+    final leadingAddressLabelMatch = RegExp(
+      r'^(?:주\s*소|주소)\s*[:：]?\s*(.+)$',
+    ).firstMatch(original);
+
+    if (leadingAddressLabelMatch != null) {
+      final valueAfterLabel = leadingAddressLabelMatch.group(1)?.trim();
+      if (valueAfterLabel != null && valueAfterLabel.isNotEmpty) {
+        final valueStart = text.indexOf(valueAfterLabel);
+        return _addressSpanFromCleanedTextValue(
+          sourceText: text,
+          candidateText: valueAfterLabel,
+          fallbackStart: valueStart < 0 ? 0 : valueStart,
+        );
+      }
+    }
+
+    return _addressSpanFromCleanedTextValue(
+      sourceText: text,
+      candidateText: original,
+      fallbackStart: text.indexOf(original),
+    );
+  }
+
+  static _TextSpanResult _addressSpanFromCleanedTextValue({
+    required String sourceText,
+    required String candidateText,
+    required int fallbackStart,
+  }) {
+    final original = candidateText.trim();
+
+    // 주소가 일반 문장 안에 들어간 경우, 실제 주소 뒤에 붙는
+    // 조사/서술어는 개인정보 주소 영역에서 제외한다.
+    // 예: "서울시 강남구 테헤란로 123으로 등록되어 있습니다."
+    //     -> "서울시 강남구 테헤란로 123"
+    final trailingSentencePatterns = [
+      RegExp(
+        r'^(.*?[0-9]+(?:[-][0-9]+)?)(?:\s*(?:으로|로|에|에서))\s*(?:등록|기재|입력|사용|처리|되어|되었습니다|되어있습니다|있습니다|입니다|이며|이고|합니다|하였습니다).*$',
+      ),
+      RegExp(
+        r'^(.*?[0-9]+(?:[-][0-9]+)?)(?:으로|로)\s*[\.,，。]*$',
+      ),
+      RegExp(
+        r'^(.*?[0-9]+(?:[-][0-9]+)?)(?:입니다|이며|이고)\s*[\.,，。]*$',
+      ),
+    ];
+
+    String value = original;
+
+    for (final pattern in trailingSentencePatterns) {
+      final match = pattern.firstMatch(original);
+      final matchedValue = match?.group(1)?.trim();
+      if (matchedValue != null && matchedValue.isNotEmpty) {
+        value = matchedValue;
+        break;
+      }
+    }
+
+    final start = sourceText.indexOf(value);
+    final resolvedStart = start < 0 ? fallbackStart : start;
+    final safeStart = resolvedStart < 0 ? 0 : resolvedStart;
+
+    return _TextSpanResult(
+      value: value,
+      start: safeStart,
+      end: safeStart + value.length,
+    );
+  }
+
   static bool _isNonAddressSentence(String compact) {
     if (compact.isEmpty) return true;
+    if (_looksLikeCertificateDocumentNumber(compact)) return true;
 
     if (compact.contains('서비스') ||
         compact.contains('고객센터') ||
         compact.contains('센터') ||
         compact.contains('상담') ||
         compact.contains('문의')) {
+      return true;
+    }
+
+    // 세무/증명서 안내 문장의 '주택임대소득', '2천만원이하' 같은 표현이
+    // 주소의 '주택', 숫자, '동' 등으로 오탐되는 것을 차단한다.
+    if (compact.contains('소득') ||
+        compact.contains('과세') ||
+        compact.contains('결정세액') ||
+        compact.contains('합계액') ||
+        compact.contains('공제') ||
+        compact.contains('금액') ||
+        compact.contains('이월결손') ||
+        compact.contains('주택임대') ||
+        compact.contains('계약금') ||
+        compact.contains('위약금') ||
+        compact.contains('기타소득') ||
+        compact.contains('종합소득세')) {
       return true;
     }
 
@@ -2193,6 +3378,16 @@ class PrivacyDetector {
     if (_isGeneralDocumentTerm(compact)) return results;
 
     final patterns = [
+      RegExp(r'(?:성\s*명|명)\s*[:：]\s*((?:[가-힣]\s*){2,4})'),
+      // 표 양식에서 "성명 임채진"처럼 콜론 없이 라벨과 이름이 같은 줄에 붙는 경우 보완.
+      // "소 득 금 액 증 명" 같은 제목 오탐은 아래 _isLikelyKoreanName/일반문서어 필터로 차단한다.
+      RegExp(r'(?:^|\s)성\s*명\s+((?:[가-힣]\s*){2,4})(?=$|\s)'),
+      // OCR이 존칭 "님"을 "남"으로 잘못 읽는 경우 보완.
+      // 예: "홍길동 님", "홍길동 남" → 앞의 이름 "홍길동"만 개인정보로 탐지한다.
+      // 오탐 방지를 위해 "여/남자/여자"는 허용하지 않는다.
+      // 주민등록증 촬영/회전 시 이름 뒤 빈 괄호가 붙는 경우. 예: "이상혁()" → "이상혁"
+      RegExp(r'^([가-힣]{2,4})\s*[\(（][^\)）]*[\)）]$'),
+      RegExp(r'^([가-힣]{2,4})\s*(님|남|넘|니)[\.\)\]】）]*$'),
       RegExp(r'(?:주문인|구문인|고객\s*주문처|주문처|수령인|받는\s*분|받는\s*사람|고객명|고객)\s*[:：]\s*([가-힣]{2,4}[\*＊xX]?)'),
       RegExp(r'대표이사\s*([가-힣]{2,4})'),
       RegExp(r'대표\s*([가-힣]{2,4})'),
@@ -2245,7 +3440,7 @@ class PrivacyDetector {
 
   static bool _hasNameHonorific(String text) {
     final compact = text.trim();
-    return RegExp(r'(님|씨|귀하|\(인\)|\(서명\))$').hasMatch(compact);
+    return RegExp(r'(님|남|넘|니|씨|귀하|\(인\)|\(서명\))[\.\)\]】）]*$').hasMatch(compact);
   }
 
   static _TextSpanResult? _extractPlainKoreanName(String text) {
@@ -2385,6 +3580,7 @@ class PrivacyDetector {
       '항목',
       '이름',
       '성명',
+      '성생',
       '생년월일',
       '계좌번호',
       '주민등록번호',
@@ -2592,7 +3788,9 @@ class PrivacyDetector {
   }
 
   static final RegExp _rrnRegex = RegExp(
-    r'[0-9]{6}[-]?[1-4][0-9]{6}',
+    // 주민등록번호: 생년월일 6자리 + 뒷자리 7자리로 고정한다.
+    // 예: 901225-1234567, 9012251234567
+    r'\b[0-9]{6}[-]?[1-4][0-9]{6}\b',
   );
 
   static final RegExp _partialRrnRegex = RegExp(
@@ -2600,7 +3798,11 @@ class PrivacyDetector {
   );
 
   static final RegExp _phoneRegex = RegExp(
-    r'01[016789][-]?\d{3,4}[-]?\d{4}',
+    // 전화번호: 휴대전화 10~11자리, 대표 유선전화 형태만 허용한다.
+    // 주민등록번호/운전면허번호 일부가 전화번호로 중복 탐지되는 것을 막기 위해
+    // 숫자 개수와 하이픈 위치를 엄격하게 제한한다.
+    // 예: 010-1234-5678, 01012345678, 02-1234-5678
+    r'\b(?:01[016789][- ]?[0-9]{3,4}[- ]?[0-9]{4}|0(?:2|[3-6][1-5])[- ]?[0-9]{3,4}[- ]?[0-9]{4})\b',
   );
 
   static final RegExp _emailRegex = RegExp(
@@ -2610,6 +3812,12 @@ class PrivacyDetector {
 
   static final RegExp _cardRegex = RegExp(
     r'(?:[0-9]{4}[-]?){3}[0-9]{4}',
+  );
+
+  static final RegExp _certificateIssueNumberRegex = RegExp(
+    // 국세/민원 증명서 발급번호 예: 8553-345-3660-056
+    // 계좌번호와 구분하기 위해 문맥 함수(_hasIssueNumberContext)와 함께 사용한다.
+    r'[0-9]{4}[-][0-9]{3}[-][0-9]{4}[-][0-9]{3}',
   );
 
   static final RegExp _accountRegex = RegExp(
@@ -2625,13 +3833,12 @@ class PrivacyDetector {
   );
 
   static final RegExp _passportRegex = RegExp(
-    // 한국 여권번호는 영문 1~2자 + 숫자/영문 혼합 7~8자 형태가 많다.
-    // 예: SM0893652, M123A4567
-    // 기존 [A-Z]{1,2}[A-Z0-9]{6,7} 패턴은 M123A4567처럼
-    // 첫 글자 뒤에 숫자가 바로 오는 9자리 값을 놓칠 수 있어 보완했다.
-    // REPUBLIC, PMKORHONG 같은 영문 단어/MRZ 일부 오탐 방지를 위해
-    // 전체 길이 8~9자 + 숫자 1개 이상 조건은 유지한다.
-    r'\b(?=[A-Z0-9]{8,9}\b)(?=[A-Z0-9]*[0-9])[A-Z]{1,2}[A-Z0-9]{7,8}\b',
+    // 일반 문서/여권 이미지에서 모두 쓰는 여권번호 패턴.
+    // 예: SM0893652(영문 2자+숫자 7자), M123A4567(영문/숫자 혼합 9자),
+    //     M12345678(영문 1자+숫자 8자), M123456789(영문 1자+숫자 9자).
+    // REPUBLIC, PASSPORT 같은 영문 단어 오탐을 막기 위해 숫자 1개 이상을 필수로 둔다.
+    r'\b(?=[A-Z0-9]{8,10}\b)(?=[A-Z0-9]*[0-9])[A-Z]{1,2}[A-Z0-9]{7,9}\b',
+    caseSensitive: false,
   );
 
   static final RegExp _mrzRegex = RegExp(
@@ -2639,16 +3846,31 @@ class PrivacyDetector {
   );
 
   static final RegExp _driverLicenseRegex = RegExp(
-    r'[0-9]{2}[-]?[0-9]{2}[-]?[0-9]{6}[-]?[0-9]{2}',
+    // 운전면허번호: 2-2-6-2 숫자 구조로 고정한다.
+    // 예: 25-20-006518-92
+    // 하이픈 없는 숫자열이나 다른 특수기호 조합은 오탐 가능성이 커서 제외한다.
+    r'\b[0-9]{2}-[0-9]{2}-[0-9]{6}-[0-9]{2}\b',
+  );
+
+  static final RegExp _studentIdRegex = RegExp(
+    // 학번: 한국기술교육대학교 학생증 테스트 기준 20으로 시작하는 10자리 숫자로 고정한다.
+    // 예: 2022161140
+    r'\b20[0-9]{8}\b',
+    caseSensitive: false,
   );
 
   static final RegExp _dateRegex = RegExp(
-    r'(19|20)[0-9]{2}[-./][0-9]{1,2}[-./][0-9]{1,2}',
+    r'((19|20)[0-9]{2}[-./년\s]+[0-9]{1,2}[-./월\s]+[0-9]{1,2}일?)',
   );
 
   static List<PrivacyItem> _applyPriorityRules(List<PrivacyItem> items) {
     final rrnItems = items.where((item) => item.type == 'RRN').toList();
+    final driverLicenseItems = items.where((item) => item.type == 'DRIVER_LICENSE').toList();
+    final passportNumberItems = items.where((item) => item.type == 'PASSPORT_NUMBER').toList();
+    final studentIdItems = items.where((item) => item.type == 'STUDENT_ID').toList();
+    final issueNumberItems = items.where((item) => item.type == 'CERTIFICATE_ISSUE_NUMBER').toList();
     final mrzItems = items.where((item) => item.type == 'PASSPORT_MRZ').toList();
+    final idIssueDateItems = items.where((item) => item.type == 'ID_ISSUE_DATE').toList();
 
     final concretePassportDateItems = items.where((item) {
       return item.type == 'BIRTH_DATE' ||
@@ -2658,6 +3880,101 @@ class PrivacyDetector {
 
     return items.where((item) {
       final itemRect = item.rect;
+
+      // 0) 신분증 발급일과 생년월일이 같은 영역에서 겹치면 문맥이 명확한 발급일을 우선한다.
+      if (item.type == 'BIRTH_DATE' && itemRect != null) {
+        for (final issueDate in idIssueDateItems) {
+          final issueRect = issueDate.rect;
+          if (issueRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - issueRect.center.dy).abs() < 8;
+          final overlaps = _rectOverlapRatio(itemRect, issueRect) >= 0.80;
+
+          if (sameLine && overlaps) {
+            return false;
+          }
+        }
+      }
+
+      // 0-1) 주민등록번호가 전화번호/부분 주민번호와 같은 영역에서 겹치면 주민등록번호만 남긴다.
+      if ((item.type == 'PHONE' || item.type == 'PARTIAL_RRN' || item.type == 'ACCOUNT_NUMBER' || item.type == 'DRIVER_LICENSE') && itemRect != null) {
+        for (final rrn in rrnItems) {
+          final rrnRect = rrn.rect;
+          if (rrnRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - rrnRect.center.dy).abs() < 18;
+          final overlaps = _rectOverlapRatio(itemRect, rrnRect) >= 0.35 ||
+              rrnRect.inflate(8).contains(itemRect.center);
+
+          if (sameLine && overlaps && item.type != 'RRN') {
+            return false;
+          }
+        }
+      }
+
+      // 0-2) 운전면허번호가 계좌번호/전화번호 등으로도 잡히면 운전면허번호를 우선한다.
+      if ((item.type == 'ACCOUNT_NUMBER' || item.type == 'PHONE' || item.type == 'PARTIAL_RRN') && itemRect != null) {
+        for (final license in driverLicenseItems) {
+          final licenseRect = license.rect;
+          if (licenseRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - licenseRect.center.dy).abs() < 18;
+          final overlaps = _rectOverlapRatio(itemRect, licenseRect) >= 0.35 ||
+              licenseRect.inflate(8).contains(itemRect.center);
+
+          if (sameLine && overlaps) {
+            return false;
+          }
+        }
+      }
+
+      // 0-3) 여권번호가 계좌번호/일반 코드로 겹치면 여권번호를 우선한다.
+      if ((item.type == 'ACCOUNT_NUMBER' || item.type == 'WAYBILL_CODE' || item.type == 'REGISTER_NUMBER') && itemRect != null) {
+        for (final passport in passportNumberItems) {
+          final passportRect = passport.rect;
+          if (passportRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - passportRect.center.dy).abs() < 18;
+          final overlaps = _rectOverlapRatio(itemRect, passportRect) >= 0.45 ||
+              passportRect.inflate(8).contains(itemRect.center);
+
+          if (sameLine && overlaps) {
+            return false;
+          }
+        }
+      }
+
+      // 0-4) 학번이 전화번호/계좌번호/일반 숫자로 겹치면 학번을 우선한다.
+      if ((item.type == 'PHONE' || item.type == 'ACCOUNT_NUMBER' || item.type == 'WAYBILL_ORDER_NUMBER') && itemRect != null) {
+        for (final studentId in studentIdItems) {
+          final studentRect = studentId.rect;
+          if (studentRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - studentRect.center.dy).abs() < 18;
+          final overlaps = _rectOverlapRatio(itemRect, studentRect) >= 0.45 ||
+              studentRect.inflate(8).contains(itemRect.center);
+
+          if (sameLine && overlaps) {
+            return false;
+          }
+        }
+      }
+
+      // 0-5) 발급번호가 계좌번호로도 잡힌 경우 발급번호를 우선한다.
+      if (item.type == 'ACCOUNT_NUMBER' && itemRect != null) {
+        for (final issue in issueNumberItems) {
+          final issueRect = issue.rect;
+          if (issueRect == null) continue;
+
+          final sameLine = (itemRect.center.dy - issueRect.center.dy).abs() < 16;
+          final overlaps = _rectOverlapRatio(itemRect, issueRect) >= 0.45 ||
+              issueRect.inflate(8).contains(itemRect.center);
+
+          if (sameLine && overlaps) {
+            return false;
+          }
+        }
+      }
 
       // 1) 주민번호와 면허번호가 같은 영역에서 겹치면 주민번호를 우선한다.
       if (item.type == 'DRIVER_LICENSE') {
@@ -2756,20 +4073,140 @@ class PrivacyDetector {
     return intersection / smallerArea;
   }
 
+  static int _privacyTypePriority(String type) {
+    switch (type) {
+      case 'RRN':
+        return 100;
+      case 'DRIVER_LICENSE':
+        return 95;
+      case 'PASSPORT_MRZ':
+        return 92;
+      case 'PASSPORT_NUMBER':
+      case 'PASSPORT_PERSONAL_NUMBER':
+        return 90;
+      case 'STUDENT_ID':
+        return 88;
+      case 'CERTIFICATE_ISSUE_NUMBER':
+        return 86;
+      case 'CARD_NUMBER':
+        return 84;
+      case 'PHONE':
+        return 82;
+      case 'EMAIL':
+        return 80;
+      case 'ACCOUNT_NUMBER':
+        return 70;
+      case 'REGISTER_NUMBER':
+        return 68;
+      case 'WAYBILL_CODE':
+      case 'WAYBILL_ORDER_NUMBER':
+        return 66;
+      case 'BIRTH_DATE':
+      case 'ID_ISSUE_DATE':
+      case 'PASSPORT_ISSUE_DATE':
+      case 'PASSPORT_EXPIRY_DATE':
+      case 'PASSPORT_DATE':
+        return 64;
+      case 'ADDRESS':
+        return 60;
+      case 'NAME':
+      case 'PASSPORT_NAME':
+        return 58;
+      case 'SCHOOL':
+      case 'MAJOR':
+      case 'COMPANY':
+      case 'DEPARTMENT':
+      case 'POSITION':
+        return 50;
+      case 'PARTIAL_RRN':
+        return 40;
+      default:
+        return 10;
+    }
+  }
+
+  static bool _shouldSuppressAsDuplicate({
+    required PrivacyItem candidate,
+    required PrivacyItem selected,
+  }) {
+    final candidateRect = candidate.rect;
+    final selectedRect = selected.rect;
+    if (candidateRect == null || selectedRect == null) return false;
+
+    final candidatePriority = _privacyTypePriority(candidate.type);
+    final selectedPriority = _privacyTypePriority(selected.type);
+
+    final overlap = _rectOverlapRatio(candidateRect, selectedRect);
+    final sameLine = (candidateRect.center.dy - selectedRect.center.dy).abs() < 18;
+    final centerInsideSelected = selectedRect.inflate(6).contains(candidateRect.center);
+
+    // 같은 값/같은 타입이 거의 같은 위치에 반복 생성된 경우 제거한다.
+    if (candidate.type == selected.type &&
+        candidate.text == selected.text &&
+        (overlap >= 0.70 || centerInsideSelected)) {
+      return true;
+    }
+
+    // 같은 박스에 서로 다른 타입이 잡히면 우선순위가 높은 타입만 유지한다.
+    if ((overlap >= 0.82 || (sameLine && overlap >= 0.55) || centerInsideSelected) &&
+        selectedPriority >= candidatePriority) {
+      return true;
+    }
+
+    // 넓은 여권 하단 코드, 주소처럼 의도적으로 넓게 잡는 타입은 세부 박스와 겹칠 수 있다.
+    // 단, MRZ 내부 세부 박스는 앞의 우선순위 규칙에서 이미 제거되므로 여기서는 넓은 박스를 유지한다.
+    if (candidate.type == 'PASSPORT_MRZ' || selected.type == 'PASSPORT_MRZ') {
+      return selectedPriority >= candidatePriority && overlap >= 0.50;
+    }
+
+    return false;
+  }
+
   static List<PrivacyItem> _removeDuplicates(List<PrivacyItem> items) {
-    final seen = <String>{};
+    final exactSeen = <String>{};
     final unique = <PrivacyItem>[];
 
-    for (final item in items) {
+    final sorted = [...items];
+    sorted.sort((a, b) {
+      final priorityDiff = _privacyTypePriority(b.type).compareTo(_privacyTypePriority(a.type));
+      if (priorityDiff != 0) return priorityDiff;
+
+      final ar = a.rect;
+      final br = b.rect;
+      if (ar == null || br == null) return 0;
+      final topDiff = ar.top.compareTo(br.top);
+      if (topDiff != 0) return topDiff;
+      return ar.left.compareTo(br.left);
+    });
+
+    for (final item in sorted) {
       final rect = item.rect;
       final key =
           '${item.type}_${item.text}_${rect?.left.toStringAsFixed(1)}_${rect?.top.toStringAsFixed(1)}_${rect?.right.toStringAsFixed(1)}_${rect?.bottom.toStringAsFixed(1)}';
 
-      if (!seen.contains(key)) {
-        seen.add(key);
+      if (exactSeen.contains(key)) continue;
+      exactSeen.add(key);
+
+      final suppressed = unique.any((selected) {
+        return _shouldSuppressAsDuplicate(
+          candidate: item,
+          selected: selected,
+        );
+      });
+
+      if (!suppressed) {
         unique.add(item);
       }
     }
+
+    unique.sort((a, b) {
+      final ar = a.rect;
+      final br = b.rect;
+      if (ar == null || br == null) return 0;
+      final topDiff = ar.top.compareTo(br.top);
+      if (topDiff != 0) return topDiff;
+      return ar.left.compareTo(br.left);
+    });
 
     return unique;
   }

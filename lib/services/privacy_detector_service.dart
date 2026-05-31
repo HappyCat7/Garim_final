@@ -182,6 +182,8 @@ class PrivacyDetectorService {
 
   String _convertType(String type) {
     switch (type) {
+      case 'NAME':
+        return '이름';
       case 'RRN':
         return '주민번호';
       case 'PARTIAL_RRN':
@@ -194,6 +196,20 @@ class PrivacyDetectorService {
         return '카드번호';
       case 'ACCOUNT_NUMBER':
         return '계좌번호';
+      case 'ADDRESS':
+        return '주소';
+      case 'COMPANY':
+        return '회사명';
+      case 'DEPARTMENT':
+        return '소속';
+      case 'POSITION':
+        return '직책';
+      case 'MAJOR':
+        return '전공';
+      case 'SCHOOL':
+        return '학교명';
+      case 'BIRTH_DATE':
+        return '생년월일';
       case 'REGISTER_NUMBER':
       case 'WAYBILL_TRACKING_NUMBER':
       case 'TRACKING_NUMBER':

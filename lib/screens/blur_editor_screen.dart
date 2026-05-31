@@ -140,12 +140,12 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       context: context,
       barrierColor: Colors.black.withOpacity(0.7),
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: const Color(0xFFF7FAFC),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(children: [
           Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 22),
           SizedBox(width: 8),
-          Text('편집 내용이 있어요', style: TextStyle(color: Colors.white, fontSize: 16)),
+          Text('편집 내용이 있어요', style: TextStyle(color: Color(0xFF1F2937), fontSize: 16)),
         ]),
         content: const Text('지금까지 편집한 블러 설정이 사라져요.\n정말 나가시겠어요?',
             style: TextStyle(color: Color(0xFF888888), fontSize: 14, height: 1.5)),
@@ -206,13 +206,13 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('${deleted.label} 블러 박스 삭제됨'),
-      backgroundColor: const Color(0xFF2D2D2D),
+      backgroundColor: const Color(0xFFDCEFF8),
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
       duration: const Duration(seconds: 3),
       action: SnackBarAction(
-          label: '되돌리기', textColor: const Color(0xFF6C63FF), onPressed: _undo),
+          label: '되돌리기', textColor: const Color(0xFF8FC9F7), onPressed: _undo),
     ));
   }
 
@@ -282,7 +282,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       canPop: !_hasEdits,
       onPopInvoked: (didPop) { if (!didPop) _handleBackPress(); },
       child: Scaffold(
-        backgroundColor: const Color(0xFF0F0F0F),
+        backgroundColor: const Color(0xFFFFFFFF),
         appBar: _buildAppBar(),
         body: Column(
           children: [
@@ -296,8 +296,8 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
   }
 
   AppBar _buildAppBar() => AppBar(
-    backgroundColor: const Color(0xFF0F0F0F),
-    foregroundColor: Colors.white,
+    backgroundColor: const Color(0xFFFFFFFF),
+    foregroundColor: const Color(0xFF1F2937),
     leading: IconButton(
       icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
       onPressed: _handleBackPress,
@@ -310,9 +310,9 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
           decoration: BoxDecoration(
-            color: const Color(0xFF6C63FF).withOpacity(0.2),
+            color: Color(0xFF8FC9F7).withOpacity(0.2),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.4)),
+            border: Border.all(color: Color(0xFF8FC9F7).withOpacity(0.4)),
           ),
           child: Text('$_activeCount',
               style: const TextStyle(color: Color(0xFF6C63FF), fontSize: 11, fontWeight: FontWeight.bold)),
@@ -339,7 +339,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
           child: Icon(
             _showOriginal ? Icons.visibility : Icons.visibility_outlined,
             size: 24,
-            color: _showOriginal ? const Color(0xFF6C63FF) : Colors.white,
+            color: _showOriginal ? const Color(0xFF8FC9F7) : Colors.white,
           ),
         ),
       ),
@@ -365,7 +365,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
       final displaySize = Size(dw, dh);
 
       return Container(
-        color: Colors.black,
+        color: Color(0xFFF7FAFC),
         child: Center(
           child: Stack(
             children: [
@@ -440,7 +440,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
   Widget _buildUndoRedoBar() {
     return Container(
       height: 38,
-      color: const Color(0xFF141414),
+      color: Color(0xFFF7FAFC),
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
@@ -482,7 +482,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
               width: 36, height: 4,
               margin: const EdgeInsets.only(top: 8, bottom: 2),
               decoration: BoxDecoration(
-                color: const Color(0xFF444444),
+                color: Color(0xFFBFE4F5),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -491,13 +491,13 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
               child: Container(
                 padding: const EdgeInsets.all(3),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF0F0F0F),
+                  color: Color(0xFFFFFFFF),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
                   children: [
                     _buildModeBtn(Icons.pan_tool_outlined, '이동/확대',
-                        !_drawMode, const Color(0xFF6C63FF), () {
+                        !_drawMode, const Color(0xFF8FC9F7), () {
                           HapticFeedback.selectionClick();
                           setState(() => _drawMode = false);
                         }),
@@ -542,11 +542,11 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
                           color: sel.isBlurred
-                              ? const Color(0xFF6C63FF)
-                              : const Color(0xFF3D3D3D),
+                              ? const Color(0xFF8FC9F7)
+                              : const Color(0xFFBFE4F5),
                           borderRadius: BorderRadius.circular(8),
                           boxShadow: sel.isBlurred
-                              ? [BoxShadow(color: const Color(0xFF6C63FF).withOpacity(0.4),
+                              ? [BoxShadow(color: Color(0xFF8FC9F7).withOpacity(0.4),
                               blurRadius: 8, offset: const Offset(0, 2))]
                               : null,
                         ),
@@ -574,7 +574,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
                   children: [
-                    _EffectChip(label: '기본 흐림',   effect: BlurEffect.gaussian,     icon: Icons.blur_on,    accentColor: const Color(0xFF6C63FF), selected: sel.effect, onTap: _changeEffect),
+                    _EffectChip(label: '기본 흐림',   effect: BlurEffect.gaussian,     icon: Icons.blur_on,    accentColor: const Color(0xFF8FC9F7), selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
                     _EffectChip(label: '유리 산란',   effect: BlurEffect.frostedGlass, icon: Icons.water_drop, accentColor: Colors.lightBlue,        selected: sel.effect, onTap: _changeEffect),
                     const SizedBox(width: 6),
@@ -599,8 +599,8 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                         child: Slider(
                           value: sel.blurIntensity,
                           min: 1.0, max: _sliderMax,
-                          activeColor: const Color(0xFF6C63FF),
-                          inactiveColor: const Color(0xFF2D2D2D),
+                          activeColor: const Color(0xFF8FC9F7),
+                          inactiveColor: const Color(0xFFDCEFF8),
                           onChanged: (v) => _onRegionUpdated(sel.copyWith(blurIntensity: v)),
                           onChangeEnd: (_) => _pushHistory(),
                         ),
@@ -628,7 +628,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                 child: ElevatedButton(
                   onPressed: _isExporting ? null : _goToExport,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
+                    backgroundColor: const Color(0xFF8FC9F7),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 15),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -636,7 +636,7 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
                   ),
                   child: _isExporting
                       ? const SizedBox(width: 20, height: 20,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      child: CircularProgressIndicator(color: Color(0xFF1F2937), strokeWidth: 2))
                       : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                     const Text('저장하기',
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
@@ -674,10 +674,10 @@ class _BlurEditorScreenState extends State<BlurEditorScreen> {
           ),
           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(icon, size: 14,
-                color: active ? Colors.white : const Color(0xFF666666)),
+                color: active ? Colors.white : const Color(0xFF6B7280)),
             const SizedBox(width: 5),
             Text(label, style: TextStyle(
-              color: active ? Colors.white : const Color(0xFF666666),
+              color: active ? Colors.white : const Color(0xFF6B7280),
               fontSize: 12,
               fontWeight: active ? FontWeight.bold : FontWeight.normal,
             )),
@@ -710,12 +710,12 @@ class _UndoRedoBtn extends StatelessWidget {
         width: 36, height: 28,
         decoration: BoxDecoration(
           color: enabled
-              ? const Color(0xFF2D2D2D)
-              : const Color(0xFF1A1A1A),
+              ? const Color(0xFFDCEFF8)
+              : const Color(0xFFFFFFFF),
           borderRadius: BorderRadius.circular(6),
         ),
         child: Icon(icon, size: 18,
-            color: enabled ? Colors.white : const Color(0xFF444444)),
+            color: enabled ? Colors.white : const Color(0xFFBFE4F5)),
       ),
     ),
   );
@@ -759,11 +759,11 @@ class _EffectChip extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon, size: 19,
-                  color: isActive ? Colors.white : const Color(0xFF888888)),
+                  color: isActive ? Colors.white : const Color(0xFF4B5563)),
               const SizedBox(height: 5),
               Text(label, textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: isActive ? Colors.white : const Color(0xFF888888),
+                    color: isActive ? Colors.white : const Color(0xFF4B5563),
                     fontSize: 10,
                     fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
                   )),

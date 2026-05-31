@@ -76,10 +76,10 @@ class _ExportScreenState extends State<ExportScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
+      backgroundColor: const Color(0xFFFFFFFF),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F0F0F),
-        foregroundColor: Colors.white,
+        backgroundColor: const Color(0xFFFFFFFF),
+        foregroundColor: const Color(0xFF1F2937),
         title: const Text('저장 · 공유', style: TextStyle(fontWeight: FontWeight.bold)),
         elevation: 0,
       ),
@@ -110,16 +110,16 @@ class _ExportScreenState extends State<ExportScreen> {
               margin: const EdgeInsets.symmetric(horizontal: 16),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
-                color: const Color(0xFF43E97B).withValues(alpha: 0.15),
+                color: Color(0xFF7DD3C7).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFF43E97B).withValues(alpha: 0.4)),
+                border: Border.all(color: Color(0xFF7DD3C7).withValues(alpha: 0.4)),
               ),
               child: const Row(
                 children: [
-                  Icon(Icons.check_circle, color: Color(0xFF43E97B), size: 18),
+                  Icon(Icons.check_circle, color: Color(0xFF7DD3C7), size: 18),
                   SizedBox(width: 8),
                   Text('갤러리에 저장됐어요',
-                      style: TextStyle(color: Color(0xFF43E97B), fontSize: 13)),
+                      style: TextStyle(color: Color(0xFF2F8F83), fontSize: 13)),
                 ],
               ),
             ),
@@ -142,12 +142,12 @@ class _ExportScreenState extends State<ExportScreen> {
                           ? const SizedBox(
                         width: 18, height: 18,
                         child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2),
+                            color: Color(0xFF1F2937), strokeWidth: 2),
                       )
                           : const Icon(Icons.save_alt_outlined),
                       label: Text(_isSaving ? '저장 중...' : '갤러리에 저장'),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF6C63FF),
+                        backgroundColor: const Color(0xFF8FC9F7),
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 15),
                         shape: RoundedRectangleBorder(
@@ -169,13 +169,13 @@ class _ExportScreenState extends State<ExportScreen> {
                           ? const SizedBox(
                         width: 18, height: 18,
                         child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2),
+                            color: Color(0xFF1F2937), strokeWidth: 2),
                       )
                           : const Icon(Icons.share_outlined),
                       label: Text(_isSharing ? '공유 중...' : '공유하기'),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF1E1E1E),
-                        foregroundColor: Colors.white,
+                        backgroundColor: const Color(0xFFCFC4F7),
+                        foregroundColor: const Color(0xFF1F2937),
                         padding: const EdgeInsets.symmetric(vertical: 15),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(14)),
@@ -195,7 +195,7 @@ class _ExportScreenState extends State<ExportScreen> {
                       icon: const Icon(Icons.arrow_back_rounded, size: 18),
                       label: const Text('다시 편집하기'),
                       style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF888888),
+                        foregroundColor: const Color(0xFF4B5563),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
                     ),

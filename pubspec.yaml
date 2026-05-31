@@ -54,3 +54,4 @@ flutter:
     - assets/models/yolo_document.tflite
     #- assets/models/yolo_card.tflite
     - assets/sticker.png
+    - assets/splash_logo.png
